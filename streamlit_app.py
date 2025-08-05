@@ -127,12 +127,6 @@ class DeterministicCostCalculator:
 # UI STREAMLIT DAN LOGIKA APLIKASI
 # ==============================================================================
 @st.cache_data
-def load_master_data():
-    try:
-import streamlit as st
-import pandas as pd
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
 
 def load_master_data():
     try:
@@ -143,7 +137,7 @@ def load_master_data():
         
         # Ambil kredensial dari st.secrets
         creds = ServiceAccountCredentials.from_json_keyfile_dict(
-            SECRET_GCP, scope
+            st.secrets["google_service_account"], scope
         )
         client = gspread.authorize(creds)
         
