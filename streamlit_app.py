@@ -127,7 +127,6 @@ class DeterministicCostCalculator:
 # UI STREAMLIT DAN LOGIKA APLIKASI
 # ==============================================================================
 @st.cache_data
-
 def load_master_data():
     try:
         scope = [
