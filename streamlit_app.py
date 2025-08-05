@@ -10,6 +10,35 @@ from oauth2client.service_account import ServiceAccountCredentials
 # ==============================================================================
 # KELAS KALKULATOR DETERMINISTIK (TIDAK BERUBAH)
 # ==============================================================================
+def extract_number(nocontainer):
+    # Mengekstrak hanya digit dari string
+    return ''.join(filter(str.isdigit, str(nocontainer)))
+
+def get_container_size_grade(nocontainer):
+    try:
+        # Ekstrak hanya bagian numerik dari nomor kontainer
+        numeric_part = extract_number(nocontainer)
+        if not numeric_part:  # Jika tidak ada angka
+            return "Others", "Others"
+            
+        nomor = int(numeric_part)
+        if 2500000 <= nomor <= 2759999:
+            return "20", "C"
+        elif 2760000 <= nomor <= 2899999:
+            return "20", "B"
+        elif 2900000 <= nomor < 3500000:
+            return "20", "A"
+        elif 4600000 <= nomor <= 4619999:
+            return "40", "C"
+        elif 4620000 <= nomor < 4629999:
+            return "40", "B"
+        elif nomor >= 4630000:
+            return "40", "A"
+        else:
+            return "Others", "Others"
+    except:
+        return "Others", "Others"
+
 class DeterministicCostCalculator:
     """
     Menggantikan ContainerRepairPipeline.
@@ -29,8 +58,8 @@ class DeterministicCostCalculator:
         }
         self.surcharge_vendor = ["MCPCONCH", "MCPNL", "MDS", "MTCP", "PTMAC"]
         self.validity_map = {
-            "JKT": {'MDS': ['A'], 'SPIL': ['A', 'B', 'C'], 'MDSBC': ['B', 'C'], 'MACBC': ['B', 'C'], 'PTMAC': ['A'], 'MCPNL': ['A', 'B', 'C'], 'MCPCONCH': ['B', 'C']},
-            "SBY": {'MTCP': ['A', 'B', 'C'], 'SPIL': ['A', 'B', 'C']}
+            "JKT": {'MDS': ['A','Others'], 'SPIL': ['A', 'B', 'C','Others'], 'MDSBC': ['B', 'C','Others'], 'MACBC': ['B', 'C','Others'], 'PTMAC': ['A','Others'], 'MCPNL': ['A', 'B', 'C','Others'], 'MCPCONCH': ['B', 'C','Others']},
+            "SBY": {'MTCP': ['A', 'B', 'C','Others'], 'SPIL': ['A', 'B', 'C','Others']}
         }
 
     def run_pipeline(self, input_data: pd.DataFrame) -> pd.DataFrame:
@@ -122,7 +151,7 @@ class DeterministicCostCalculator:
                         if col_name in final_df.columns:
                             final_df.loc[idx, col_name] = np.nan
         return final_df
-
+    
 # ==============================================================================
 # UI STREAMLIT DAN LOGIKA APLIKASI
 # ==============================================================================
@@ -139,20 +168,14 @@ def load_master_data():
             st.secrets["google_service_account"], scope
         )
         client = gspread.authorize(creds)
-        
-        # Ganti ID Spreadsheet dan nama sheet jika perlu
+
+        # Ganti ke ID Spreadsheet kamu
         spreadsheet_id = "1llPtY1eX2j3tf8yaUGKc56M4EnbjPGpGf5ATVvN1_OQ"
         sheet = client.open_by_key(spreadsheet_id).sheet1
 
-        # Ambil data dan ubah ke DataFrame
         data = sheet.get_all_records()
         df = pd.DataFrame(data)
-
         return df
-
-    except Exception as e:
-        st.error(f"Gagal memuat data: {e}")
-        return pd.DataFrame()  # kembalikan DataFrame kosong
 
     except Exception as e:
         st.error(f"Terjadi error saat mengambil master material: {e}")
@@ -177,7 +200,13 @@ if pipeline:
     with st.sidebar:
         st.header("⚙️ Parameter Global")
         depo_option = st.selectbox("Pilih DEPO", ["JKT", "SBY"], key="global_depo")
-        st.info("Pastikan file `master_material.csv` ada di folder aplikasi dan terupdate.")
+        # Tambahkan tombol refresh
+        if st.button("Refresh Data Master", help="Klik untuk memperbarui data master dari Google Sheet"):
+            # Clear cache untuk memaksa reload data
+            st.cache_data.clear()
+            st.rerun()
+
+        st.info("Pastikan master yang digunakan sudah terupdate.")
 
     tab_manual, tab_bulk = st.tabs(["Input Manual", "Input CSV & Alokasi"])
 
@@ -244,7 +273,7 @@ if pipeline:
         st.header("Alokasi Optimal untuk Perbaikan Kontainer")
 
         # --- BAGIAN UTAMA (SELALU TERLIHAT) ---
-        st.info("Pastikan file CSV yang diupload memiliki kolom: `NO_EOR`, `CONTAINER_SIZE`, `CONTAINER_GRADE`, `CONTAINER_TYPE`, `MATERIAL`, `QTY`.")
+        st.info("Pastikan file CSV yang diupload memiliki kolom: `NO_EOR`, `NOCONTAINER` , `MATERIAL`, `QTY`.")
         
         uploaded_file = st.file_uploader("Upload file CSV Anda", type=["csv"], key="bulk_upload_spil")
         
@@ -299,16 +328,41 @@ if pipeline:
         # Cukup pastikan blok di atas sudah menggantikan yang lama.
         @st.cache_data
         def run_spil_centric_allocation(_pipeline, uploaded_file_content, depo_option, allocation_method, spil_today_cap, spil_tomorrow_cap, other_vendor_caps, use_wl, use_ov, use_container_filter, use_mhr_filter):
-            # ... (fungsi ini tidak perlu diubah) ...
-            data_raw = pd.read_csv(StringIO(uploaded_file_content))
-            data_raw.columns = data_raw.columns.str.strip()
-            list_need = ['NO_EOR', 'CONTAINER_SIZE', 'CONTAINER_GRADE', 'CONTAINER_TYPE', 'MATERIAL', 'QTY']
-            missing_cols = [col for col in list_need if col not in data_raw.columns]
-            if missing_cols:
-                st.error(f"Kolom berikut tidak ditemukan: {', '.join(missing_cols)}")
+            try:
+                # Coba baca dengan beberapa delimiter umum
+                for delimiter in [',', ';', '\t']:
+                    try:
+                        data_raw = pd.read_csv(StringIO(uploaded_file_content), delimiter=delimiter)
+                        break
+                    except:
+                        continue
+                
+                # Jika masih error, coba baca dengan engine python
+                if 'data_raw' not in locals():
+                    data_raw = pd.read_csv(StringIO(uploaded_file_content), engine='python')
+                    
+                data_raw.columns = data_raw.columns.str.strip()
+                
+                # Pastikan NOCONTAINER ada di kolom yang dibutuhkan
+                list_need = ['NO_EOR', 'NOCONTAINER', 'MATERIAL', 'QTY']
+                missing_cols = [col for col in list_need if col not in data_raw.columns]
+                if missing_cols:
+                    st.error(f"Kolom berikut tidak ditemukan: {', '.join(missing_cols)}")
+                    return pd.DataFrame()
+                
+                # Ekstrak size dan grade dari NOCONTAINER
+                data = data_raw[list_need].copy()
+                data[['CONTAINER_SIZE', 'CONTAINER_GRADE']] = data['NOCONTAINER'].apply(
+                    lambda x: pd.Series(get_container_size_grade(x))
+                )
+                data['CONTAINER_TYPE'] = data['CONTAINER_SIZE'] + data['CONTAINER_GRADE']
+                data["DEPO"] = depo_option
+                
+                # ... (lanjutan kode yang sama)
+            except Exception as e:
+                st.error(f"Gagal membaca file CSV: {str(e)}")
                 return pd.DataFrame()
-            data = data_raw[list_need].copy()
-            data["DEPO"] = depo_option
+
             raw_results = _pipeline.run_pipeline(data)
             if 'PREDIKSI_SPIL' not in raw_results.columns:
                 st.error("Perhitungan untuk SPIL tidak tersedia.")
