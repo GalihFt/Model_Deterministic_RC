@@ -199,7 +199,7 @@ pipeline = get_pipeline(master_material_df)
 if pipeline:
     with st.sidebar:
         st.header("⚙️ Parameter Global")
-        depo_option = st.selectbox("Pilih DEPO", ["JKT", "SBY"], key="global_depo")
+        depo_option = st.selectbox("Pilih DEPO", ["SBY","JKT"], key="global_depo")
         # Tambahkan tombol refresh
         if st.button("Refresh Data Master", help="Klik untuk memperbarui data master dari Google Sheet"):
             # Clear cache untuk memaksa reload data
