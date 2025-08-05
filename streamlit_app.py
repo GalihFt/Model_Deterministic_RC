@@ -129,17 +129,37 @@ class DeterministicCostCalculator:
 @st.cache_data
 def load_master_data():
     try:
-        scope = ["https://spreadsheets.google.com/feeds",'https://www.googleapis.com/auth/drive']
-        creds = ServiceAccountCredentials.from_json_keyfile_name("daring-span-436113-t5-9d44f9437abd.json", scope)
-        client = gspread.authorize(creds)
+import streamlit as st
+import pandas as pd
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
-        # Ganti ke ID Spreadsheet kamu
+def load_master_data():
+    try:
+        scope = [
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/drive"
+        ]
+        
+        # Ambil kredensial dari st.secrets
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(
+            st.secrets["google_service_account"], scope
+        )
+        client = gspread.authorize(creds)
+        
+        # Ganti ID Spreadsheet dan nama sheet jika perlu
         spreadsheet_id = "1llPtY1eX2j3tf8yaUGKc56M4EnbjPGpGf5ATVvN1_OQ"
         sheet = client.open_by_key(spreadsheet_id).sheet1
 
+        # Ambil data dan ubah ke DataFrame
         data = sheet.get_all_records()
         df = pd.DataFrame(data)
+
         return df
+
+    except Exception as e:
+        st.error(f"Gagal memuat data: {e}")
+        return pd.DataFrame()  # kembalikan DataFrame kosong
 
     except Exception as e:
         st.error(f"Terjadi error saat mengambil master material: {e}")
