@@ -143,7 +143,7 @@ def load_master_data():
         
         # Ambil kredensial dari st.secrets
         creds = ServiceAccountCredentials.from_json_keyfile_dict(
-            st.secrets["google_service_account"], scope
+            SECRET_GCP, scope
         )
         client = gspread.authorize(creds)
         
