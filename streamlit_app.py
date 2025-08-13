@@ -178,7 +178,6 @@ def load_master_data():
         creds = ServiceAccountCredentials.from_json_keyfile_dict(
             st.secrets["google_service_account"], scope
         )
-        
         client = gspread.authorize(creds)
 
         # Replace with your Spreadsheet ID
@@ -403,7 +402,7 @@ if pipeline:
                     data_raw = pd.read_excel(BytesIO(uploaded_file_content), engine='odf')
                 else:
                     st.error(f"Format file tidak didukung: {file_extension}")
-                    return pd.DataFrame()
+                    return pd.DataFrame(), pd.DataFrame() # Return two empty dataframes
 
                 data_raw.columns = data_raw.columns.str.strip()
                 
@@ -618,6 +617,7 @@ if pipeline:
                     csv_final = sorted_display_df.to_csv(index=False).encode('utf-8')
                     st.download_button(label="Download Hasil Alokasi", data=csv_final, file_name=f"hasil_alokasi_{depo_option}.csv", mime="text/csv")
                     
+                    # --- FITUR BARU: Menampilkan Material yang Tidak Dikenali ---
                     with st.expander("Lihat Tabel Alokasi Lengkap", expanded=False):
                         st.caption("Tabel ini menampilkan hasil alokasi final dan semua detail kalkulasi.")
                         base_info_cols = ['NO_EOR', 'CONTAINER_TYPE', 'ALOKASI', 'HARGA_FINAL', 'MHR', 'Selisih_Prediksi_Biaya', 'Selisih_Harga_per_MHR', 'WARNING_COUNT']
@@ -669,6 +669,58 @@ if pipeline:
                             mime="text/csv",
                             key="download_super_lengkap"
                         )
+                    with st.expander("Cek Detail Material Tidak Dikenali", expanded=False):
+                        try:
+                            # Re-process the uploaded content to get a list of unmatched materials
+                            file_extension_check = file_name.split('.')[-1].lower()
+                            data_raw_check = None
+                            
+                            if file_extension_check == 'csv':
+                                content_str_check = uploaded_file_content.decode('utf-8')
+                                # Try to read with common delimiters
+                                for delimiter in [',', ';', '\t']:
+                                    try:
+                                        temp_df = pd.read_csv(StringIO(content_str_check), delimiter=delimiter)
+                                        # Check if MATERIAL column exists to confirm correct parsing
+                                        if 'MATERIAL' in [c.strip() for c in temp_df.columns]:
+                                            data_raw_check = temp_df
+                                            break
+                                    except Exception:
+                                        continue
+                                if data_raw_check is None: # Fallback
+                                     data_raw_check = pd.read_csv(StringIO(content_str_check), engine='python')
+
+                            elif file_extension_check in ['xlsx', 'xls']:
+                                data_raw_check = pd.read_excel(BytesIO(uploaded_file_content))
+                            elif file_extension_check == 'ods':
+                                data_raw_check = pd.read_excel(BytesIO(uploaded_file_content), engine='odf')
+                            
+                            if data_raw_check is not None and not data_raw_check.empty:
+                                data_raw_check.columns = data_raw_check.columns.str.strip()
+                                if 'MATERIAL' in data_raw_check.columns:
+                                    data_raw_check['MATERIAL'] = data_raw_check['MATERIAL'].astype(str).str.strip()
+                                    
+                                    master_materials_set = set(master_material_df['MATERIAL'])
+                                    unmatched_materials = data_raw_check[~data_raw_check['MATERIAL'].isin(master_materials_set)]
+                                    
+                                    if not unmatched_materials.empty:
+                                        st.warning("Ditemukan material dari file Anda yang tidak ada di data master. Periksa daftarnya di bawah ini.")
+                                        unmatched_counts = unmatched_materials['MATERIAL'].value_counts().reset_index()
+                                        unmatched_counts.columns = ['Material Tidak Dikenali', 'Jumlah Kemunculan']
+                                        st.dataframe(unmatched_counts, use_container_width=True)
+                                    else:
+                                        st.success("✅ Semua material dari file input Anda berhasil dikenali di data master.")
+                                else:
+                                    st.error("Kolom 'MATERIAL' tidak ditemukan di file yang diunggah untuk pengecekan.")
+                            elif data_raw_check is not None: # Is empty
+                                st.info("File input kosong.")
+                            else: # Is None
+                                st.error("Gagal membaca file untuk pengecekan material.")
+
+                        except Exception as e:
+                            st.error(f"Gagal melakukan pengecekan material: {e}")
+                    # --- AKHIR FITUR BARU ---
+
             except Exception as e:
                 st.error(f"Terjadi error: {str(e)}")
                 st.exception(e)
