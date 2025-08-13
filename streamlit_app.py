@@ -291,10 +291,29 @@ if pipeline:
 
     with tab_bulk:
         st.header("Alokasi Optimal untuk Perbaikan Kontainer")
-
-        # --- BAGIAN UTAMA (SELALU TERLIHAT) ---
         st.info("Pastikan file CSV, Excel, atau ODS yang diupload memiliki kolom: `NO_EOR`, `NOCONTAINER` , `MATERIAL`, `QTY`.")
         
+        template_data = {
+            'NO_EOR': ['EOR001', 'EOR001', 'EOR002'],
+            'NOCONTAINER': ['ABCU1234567', 'ABCU1234567', 'DEFU7654321'],
+            'MATERIAL': ['MAT001', 'MAT002', 'MAT003'],
+            'QTY': [1, 2, 3]
+        }
+        template_df = pd.DataFrame(template_data)
+        
+        # Buat template Excel
+        excel_buffer = BytesIO()
+        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+            template_df.to_excel(writer, index=False, sheet_name='Template')
+        
+        st.download_button(
+            label="Download Template Excel",
+            data=excel_buffer.getvalue(),
+            file_name="template_alokasi_perbaikan.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            help="Download template Excel dengan format yang benar"
+        )
+
         # --- PERUBAHAN 1: Menambahkan tipe file yang didukung ---
         uploaded_file = st.file_uploader(
             "Upload file Anda (CSV, Excel, ODS)", 
