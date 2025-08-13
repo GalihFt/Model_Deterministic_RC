@@ -310,7 +310,7 @@ if pipeline:
                 'SPNU2759465',
                 'SPNU2759465'
             ],
-            'KETERANGAN': [
+            'MATERIAL': [ # Mengganti KETERANGAN dengan MATERIAL
                 'MISCELENEOUS - SECURING DEVICE / OTHER MATERIAL REMOVE',
                 'CROSS MEMBER - INSERT 30 CM',
                 'FORKLIFT POCKET - WEB STRAIGHTEN',
@@ -335,7 +335,6 @@ if pipeline:
             help="Download template Excel dengan format yang benar"
         )
 
-        # --- PERUBAHAN 1: Menambahkan tipe file yang didukung ---
         uploaded_file = st.file_uploader(
             "Upload file Anda (CSV, Excel, ODS)", 
             type=["csv", "xlsx", "xls", "ods"], 
@@ -350,48 +349,39 @@ if pipeline:
         )
 
         st.markdown("---")
-        st.markdown("##### **Kapasitas SPIL**")
+        
+        # --- PERUBAHAN: PENGATURAN KAPASITAS VENDOR ---
+        st.markdown("##### **Pengaturan Kapasitas Vendor**")
         col_toggle1, col_toggle2 = st.columns(2)
         use_container_filter = col_toggle1.toggle("Gunakan Filter Kapasitas Kontainer", value=True, key="toggle_container")
         use_mhr_filter = col_toggle2.toggle("Gunakan Filter Kapasitas MHR", value=True, key="toggle_mhr")
         
+        st.markdown("**Kapasitas SPIL**")
         col1_spil, col2_spil = st.columns(2)
         spil_container_capacity = col1_spil.number_input(f"Kapasitas Kontainer SPIL", min_value=0, value=100, key=f"today_container_spil", disabled=not use_container_filter)
         spil_mhr_capacity = col2_spil.number_input(f"Kapasitas MHR SPIL", min_value=0, value=5000, key=f"today_mhr_spil", format="%d", disabled=not use_mhr_filter)
-        # --- AKHIR BAGIAN UTAMA ---
 
-
-        # --- EXPANDER BARU UNTUK OPSI TAMBAHAN ---
-        with st.expander("Opsi Tambahan (Waiting List & Vendor Lain)"):
-            st.markdown("##### **Penanganan Sisa Pekerjaan**")
-            use_waiting_list = st.checkbox("Gunakan Waiting List SPIL", key="use_waiting_list")
-            tomorrow_capacities_input = {}
-            if use_waiting_list:
-                col1_wl, col2_wl = st.columns(2)
-                tomorrow_container_capacity = col1_wl.number_input("Kapasitas Kontainer SPIL Besok", min_value=0, value=50, key="tomorrow_container_spil", disabled=not use_container_filter)
-                tomorrow_mhr_capacity = col2_wl.number_input("Kapasitas MHR SPIL Besok", min_value=0, value=2500, key="tomorrow_mhr_spil", format="%d", disabled=not use_mhr_filter)
-                tomorrow_capacities_input = {"kontainer": tomorrow_container_capacity, "mhr": tomorrow_mhr_capacity}
-
-            st.markdown("---")
-            use_other_vendors = st.checkbox("Gunakan Vendor Lain", key="use_other_vendors")
-            other_vendor_capacities_input = {}
-            if use_other_vendors:
-                other_vendors = [v for v in pipeline.depo_config.get(depo_option, {}).get("vendors", []) if v != 'SPIL']
+        st.markdown("---")
+        use_other_vendors = st.checkbox("Alokasikan sisa pekerjaan ke Vendor Lain", key="use_other_vendors", value=True)
+        other_vendor_capacities_input = {}
+        if use_other_vendors:
+            other_vendors = [v for v in pipeline.depo_config.get(depo_option, {}).get("vendors", []) if v != 'SPIL']
+            if other_vendors:
+                st.markdown("**Kapasitas Vendor Lain**")
                 for vendor in other_vendors:
-                    st.markdown(f"**Kapasitas {vendor}**")
+                    st.markdown(f"**{vendor}**")
                     col1_other, col2_other = st.columns(2)
                     container_capacity = col1_other.number_input(f"Kapasitas Kontainer", min_value=0, value=100, key=f"other_container_{vendor}", disabled=not use_container_filter, label_visibility="collapsed")
                     mhr_capacity = col2_other.number_input(f"Kapasitas MHR", min_value=0, value=5000, key=f"other_mhr_{vendor}", format="%d", disabled=not use_mhr_filter, label_visibility="collapsed")
                     other_vendor_capacities_input[vendor] = {"kontainer": container_capacity, "mhr": mhr_capacity}
-        # --- AKHIR EXPANDER ---
+        # --- AKHIR PERUBAHAN ---
 
 
         st.markdown("---")
         run_bulk_button = st.button("Cek Alokasi", type="primary", key="spil_run")
         
-        # --- PERUBAHAN 2: Memperbarui fungsi alokasi untuk menangani berbagai tipe file ---
         @st.cache_data
-        def run_spil_centric_allocation(_pipeline, uploaded_file_content, file_name, depo_option, allocation_method, spil_today_cap, spil_tomorrow_cap, other_vendor_caps, use_wl, use_ov, use_container_filter, use_mhr_filter):
+        def run_spil_centric_allocation(_pipeline, uploaded_file_content, file_name, depo_option, allocation_method, spil_today_cap, other_vendor_caps, use_ov, use_container_filter, use_mhr_filter):
             try:
                 file_extension = file_name.split('.')[-1].lower()
                 
@@ -480,61 +470,46 @@ if pipeline:
                 
                 overflow_df = spil_candidates[spil_candidates['NO_EOR'].isin(unallocated_eors)].copy()
                 
-                if use_wl:
-                    waiting_list_candidates = overflow_df.sort_values(by=sort_key, ascending=False)
-                    spil_tomorrow_container_cap = spil_tomorrow_cap.get('kontainer', 0) if use_container_filter else float('inf')
-                    spil_tomorrow_mhr_cap = spil_tomorrow_cap.get('mhr', 0) if use_mhr_filter else float('inf')
-                    remaining_after_wl = []
-                    for idx, row in waiting_list_candidates.iterrows():
-                        eor = row['NO_EOR']
-                        mhr_needed = row.get('MHR_SPIL', 0)
-                        if pd.isna(mhr_needed): mhr_needed = 0
-                        if (not use_container_filter or spil_tomorrow_container_cap > 0) and (not use_mhr_filter or spil_tomorrow_mhr_cap >= mhr_needed):
-                            if allocation_method == 'Prediksi Harga per MHR':
-                                harga_final_value = row['PREDIKSI/MHR_SPIL']
-                            else:
-                                harga_final_value = row['PREDIKSI_SPIL']
-                            allocations[eor] = {
-                                'ALOKASI': 'Waiting List SPIL', 
-                                'HARGA_FINAL': harga_final_value
-                            }
-                            if use_container_filter: spil_tomorrow_container_cap -= 1
-                            if use_mhr_filter: spil_tomorrow_mhr_cap -= mhr_needed
-                        else:
-                            remaining_after_wl.append(eor)
-                    overflow_df = overflow_df[overflow_df['NO_EOR'].isin(remaining_after_wl)].copy()
-
                 if use_ov:
-                    other_vendor_candidates = overflow_df.sort_values(by=sort_key, ascending=True)
+                    other_vendor_candidates = overflow_df.sort_values(by=sort_key, ascending=True) # Ascending to pick the cheapest other vendor
                     for idx, row in other_vendor_candidates.iterrows():
                         eor = row['NO_EOR']
                         allocated = False
-                        cheapest_options = row[other_vendor_preds].dropna().sort_values()
+                        
+                        # Determine sort order for cheapest options based on allocation method
+                        if allocation_method == 'Prediksi Harga per MHR':
+                            pred_cols_other = [c for c in raw_results.columns if c.startswith('PREDIKSI/MHR_') and 'SPIL' not in c]
+                            cheapest_options = row[pred_cols_other].dropna().sort_values()
+                        else:
+                            cheapest_options = row[other_vendor_preds].dropna().sort_values()
+
                         for vendor_price_val in cheapest_options.items():
-                            vendor_name = vendor_price_val[0].replace('PREDIKSI_', '')
+                            if allocation_method == 'Prediksi Harga per MHR':
+                                vendor_name = vendor_price_val[0].replace('PREDIKSI/MHR_', '')
+                            else:
+                                vendor_name = vendor_price_val[0].replace('PREDIKSI_', '')
+
                             mhr_needed = row.get(f'MHR_{vendor_name}', 0)
                             if pd.isna(mhr_needed): mhr_needed = 0
+                            
                             container_cap = other_vendor_caps.get(vendor_name, {}).get('kontainer', 0) if use_container_filter else float('inf')
                             mhr_cap = other_vendor_caps.get(vendor_name, {}).get('mhr', 0) if use_mhr_filter else float('inf')
+                            
                             if (not use_container_filter or container_cap > 0) and (not use_mhr_filter or mhr_cap >= mhr_needed):
-                                if allocation_method == 'Prediksi Harga per MHR':
-                                    harga_final_value = row.get(f'PREDIKSI/MHR_{vendor_name}', np.nan)
-                                else:
-                                    harga_final_value = vendor_price_val[1]
                                 allocations[eor] = {
                                     'ALOKASI': f'{vendor_name}', 
-                                    'HARGA_FINAL': harga_final_value
+                                    'HARGA_FINAL': vendor_price_val[1]
                                 }
                                 if use_container_filter: other_vendor_caps[vendor_name]['kontainer'] -= 1
                                 if use_mhr_filter: other_vendor_caps[vendor_name]['mhr'] -= mhr_needed
                                 allocated = True
-                                break
+                                break # Move to next EOR once allocated
                         if not allocated:
                             allocations[eor] = {
                                 'ALOKASI': 'Tidak Terhandle', 
                                 'HARGA_FINAL': np.nan
                             }
-                else:
+                else: # If not using other vendors
                     for eor in overflow_df['NO_EOR']:
                         allocations[eor] = {
                             'ALOKASI': 'Tidak Terhandle', 
@@ -543,7 +518,7 @@ if pipeline:
 
                 allocations_df = pd.DataFrame.from_dict(allocations, orient='index')
                 final_df = raw_results.set_index('NO_EOR').join(allocations_df, how='left').reset_index()
-                                    
+                                        
                 return final_df
             except Exception as e:
                 st.error(f"Terjadi kesalahan saat memproses file: {e}")
@@ -552,15 +527,13 @@ if pipeline:
 
         if run_bulk_button and uploaded_file is not None:
             try:
-                # --- PERUBAHAN 3: Menyesuaikan pemanggilan fungsi ---
                 uploaded_file_content = uploaded_file.getvalue()
                 file_name = uploaded_file.name
                 spil_today_caps = {"kontainer": spil_container_capacity, "mhr": spil_mhr_capacity}
                 with st.spinner(f'Menjalankan alokasi dengan algoritma "{allocation_method}"...'):
                     final_results = run_spil_centric_allocation(
                         pipeline, uploaded_file_content, file_name, depo_option, allocation_method,
-                        spil_today_caps, tomorrow_capacities_input,
-                        other_vendor_capacities_input, use_waiting_list, use_other_vendors,
+                        spil_today_caps, other_vendor_capacities_input, use_other_vendors,
                         use_container_filter, use_mhr_filter
                     )
                 
@@ -700,6 +673,6 @@ if pipeline:
                 st.error(f"Terjadi error: {str(e)}")
                 st.exception(e)
         elif run_bulk_button:
-            st.warning("Mohon unggah file CSV terlebih dahulu.")
+            st.warning("Mohon unggah file terlebih dahulu.")
 else:
     st.warning("Pipeline kalkulasi tidak dapat dimuat. Pastikan file master tersedia dan koneksi berhasil.")
