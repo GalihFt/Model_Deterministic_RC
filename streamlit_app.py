@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from io import StringIO
+from io import StringIO, BytesIO
 from functools import reduce
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -67,7 +67,17 @@ class DeterministicCostCalculator:
         Fungsi utama yang menjalankan seluruh proses kalkulasi.
         Nama fungsi 'run_pipeline' dipertahankan agar kompatibel dengan sisa dashboard.
         """
+        # Hitung jumlah material yang tidak ada di master sebelum merge
+        input_data['WARNING'] = input_data['MATERIAL'].apply(
+            lambda x: 0 if x in self.master_material['MATERIAL'].values else 1
+        )
+        
         df_merged = pd.merge(input_data, self.master_material, on="MATERIAL", how="left")
+        
+        # Hitung total warning per EOR
+        warning_counts = input_data.groupby('NO_EOR')['WARNING'].sum().reset_index()
+        warning_counts.rename(columns={'WARNING': 'WARNING_COUNT'}, inplace=True)
+        
         base_cols = input_data[['NO_EOR', 'CONTAINER_GRADE', 'CONTAINER_TYPE', 'DEPO']].drop_duplicates(subset=['NO_EOR'])
         all_results_df = base_cols.set_index('NO_EOR')
 
@@ -150,6 +160,11 @@ class DeterministicCostCalculator:
                         col_name = f"{col_prefix}{vendor}"
                         if col_name in final_df.columns:
                             final_df.loc[idx, col_name] = np.nan
+                            
+        # Gabungkan warning count ke final_df
+        final_df = pd.merge(final_df, warning_counts, on='NO_EOR', how='left')
+        final_df['WARNING_COUNT'] = final_df['WARNING_COUNT'].fillna(0).astype(int)
+        
         return final_df
     
 # ==============================================================================
@@ -158,25 +173,26 @@ class DeterministicCostCalculator:
 @st.cache_data
 def load_master_data():
     try:
-        scope = [
-            "https://spreadsheets.google.com/feeds",
-            "https://www.googleapis.com/auth/drive"
-        ]
-        
-        # Ambil kredensial dari st.secrets
+        scope = ["https://spreadsheets.google.com/feeds",'https://www.googleapis.com/auth/drive']
+        # IMPORTANT: Replace "daring-span-436113-t5-9d44f9437abd.json" with the actual name of your JSON keyfile.
         creds = ServiceAccountCredentials.from_json_keyfile_dict(
             st.secrets["google_service_account"], scope
         )
+        
         client = gspread.authorize(creds)
 
-        # Ganti ke ID Spreadsheet kamu
+        # Replace with your Spreadsheet ID
         spreadsheet_id = "1llPtY1eX2j3tf8yaUGKc56M4EnbjPGpGf5ATVvN1_OQ"
         sheet = client.open_by_key(spreadsheet_id).sheet1
 
         data = sheet.get_all_records()
         df = pd.DataFrame(data)
+        # --- PERBAIKAN ---
+        # Membersihkan spasi ekstra dari kolom MATERIAL untuk memastikan pencocokan yang akurat
+        if 'MATERIAL' in df.columns:
+            df['MATERIAL'] = df['MATERIAL'].astype(str).str.strip()
         return df
-
+    
     except Exception as e:
         st.error(f"Terjadi error saat mengambil master material: {e}")
         return None
@@ -246,6 +262,11 @@ if pipeline:
                         if not prediction_result.empty:
                             result_row = prediction_result.iloc[0]
                             st.subheader(f"Hasil Estimasi untuk DEPO {depo_option}")
+                            
+                            # Tampilkan warning count jika ada
+                            if result_row['WARNING_COUNT'] > 0:
+                                st.warning(f"⚠️ Ada {result_row['WARNING_COUNT']} material yang tidak ditemukan di data master dan tidak dihitung dalam estimasi.")
+                            
                             display_data_list = []
                             for vendor in pipeline.depo_config.get(depo_option, {}).get("vendors", []):
                                 display_data_list.append({
@@ -267,15 +288,19 @@ if pipeline:
     # ==============================================================================
     # TAB 2: ALOKASI OPTIMAL (BULK) - LOGIKA BARU
     # ==============================================================================
-# GANTI SELURUH BLOK KODE 'with tab_bulk:' DENGAN INI
 
     with tab_bulk:
         st.header("Alokasi Optimal untuk Perbaikan Kontainer")
 
         # --- BAGIAN UTAMA (SELALU TERLIHAT) ---
-        st.info("Pastikan file CSV yang diupload memiliki kolom: `NO_EOR`, `NOCONTAINER` , `MATERIAL`, `QTY`.")
+        st.info("Pastikan file CSV, Excel, atau ODS yang diupload memiliki kolom: `NO_EOR`, `NOCONTAINER` , `MATERIAL`, `QTY`.")
         
-        uploaded_file = st.file_uploader("Upload file CSV Anda", type=["csv"], key="bulk_upload_spil")
+        # --- PERUBAHAN 1: Menambahkan tipe file yang didukung ---
+        uploaded_file = st.file_uploader(
+            "Upload file Anda (CSV, Excel, ODS)", 
+            type=["csv", "xlsx", "xls", "ods"], 
+            key="bulk_upload_spil"
+        )
         
         allocation_method = st.selectbox(
             "Pilih Algoritma Alokasi",
@@ -323,34 +348,44 @@ if pipeline:
 
         st.markdown("---")
         run_bulk_button = st.button("Cek Alokasi", type="primary", key="spil_run")
-
-        # Sisa kode untuk menjalankan alokasi dan menampilkan hasil tidak perlu diubah.
-        # Cukup pastikan blok di atas sudah menggantikan yang lama.
+        
+        # --- PERUBAHAN 2: Memperbarui fungsi alokasi untuk menangani berbagai tipe file ---
         @st.cache_data
-        def run_spil_centric_allocation(_pipeline, uploaded_file_content, depo_option, allocation_method, spil_today_cap, spil_tomorrow_cap, other_vendor_caps, use_wl, use_ov, use_container_filter, use_mhr_filter):
+        def run_spil_centric_allocation(_pipeline, uploaded_file_content, file_name, depo_option, allocation_method, spil_today_cap, spil_tomorrow_cap, other_vendor_caps, use_wl, use_ov, use_container_filter, use_mhr_filter):
             try:
-                # Coba baca dengan beberapa delimiter umum
-                for delimiter in [',', ';', '\t']:
-                    try:
-                        data_raw = pd.read_csv(StringIO(uploaded_file_content), delimiter=delimiter)
-                        break
-                    except:
-                        continue
+                file_extension = file_name.split('.')[-1].lower()
                 
-                # Jika masih error, coba baca dengan engine python
-                if 'data_raw' not in locals():
-                    data_raw = pd.read_csv(StringIO(uploaded_file_content), engine='python')
-                    
+                # Membaca file berdasarkan ekstensinya
+                if file_extension == 'csv':
+                    content_str = uploaded_file_content.decode('utf-8')
+                    # Coba baca dengan beberapa delimiter umum
+                    for delimiter in [',', ';', '\t']:
+                        try:
+                            data_raw = pd.read_csv(StringIO(content_str), delimiter=delimiter)
+                            break
+                        except Exception:
+                            continue
+                    if 'data_raw' not in locals():
+                         data_raw = pd.read_csv(StringIO(content_str), engine='python')
+                elif file_extension in ['xlsx', 'xls']:
+                    data_raw = pd.read_excel(BytesIO(uploaded_file_content))
+                elif file_extension == 'ods':
+                    data_raw = pd.read_excel(BytesIO(uploaded_file_content), engine='odf')
+                else:
+                    st.error(f"Format file tidak didukung: {file_extension}")
+                    return pd.DataFrame()
+
                 data_raw.columns = data_raw.columns.str.strip()
                 
-                # Pastikan NOCONTAINER ada di kolom yang dibutuhkan
+                if 'MATERIAL' in data_raw.columns:
+                    data_raw['MATERIAL'] = data_raw['MATERIAL'].astype(str).str.strip()
+
                 list_need = ['NO_EOR', 'NOCONTAINER', 'MATERIAL', 'QTY']
                 missing_cols = [col for col in list_need if col not in data_raw.columns]
                 if missing_cols:
                     st.error(f"Kolom berikut tidak ditemukan: {', '.join(missing_cols)}")
                     return pd.DataFrame()
                 
-                # Ekstrak size dan grade dari NOCONTAINER
                 data = data_raw[list_need].copy()
                 data[['CONTAINER_SIZE', 'CONTAINER_GRADE']] = data['NOCONTAINER'].apply(
                     lambda x: pd.Series(get_container_size_grade(x))
@@ -358,113 +393,132 @@ if pipeline:
                 data['CONTAINER_TYPE'] = data['CONTAINER_SIZE'] + data['CONTAINER_GRADE']
                 data["DEPO"] = depo_option
                 
-                # ... (lanjutan kode yang sama)
-            except Exception as e:
-                st.error(f"Gagal membaca file CSV: {str(e)}")
-                return pd.DataFrame()
+                raw_results = _pipeline.run_pipeline(data)
+                if 'PREDIKSI_SPIL' not in raw_results.columns:
+                    st.error("Perhitungan untuk SPIL tidak tersedia.")
+                    return pd.DataFrame()
 
-            raw_results = _pipeline.run_pipeline(data)
-            if 'PREDIKSI_SPIL' not in raw_results.columns:
-                st.error("Perhitungan untuk SPIL tidak tersedia.")
-                return pd.DataFrame()
+                if 'WARNING_COUNT' not in raw_results.columns:
+                    raw_results['WARNING_COUNT'] = 0
 
-            other_vendor_preds = [c for c in raw_results.columns if c.startswith('PREDIKSI_') and 'SPIL' not in c and not c.startswith('PREDIKSI/MHR_')]
-            raw_results['Prediksi_Biaya_Lain'] = raw_results[other_vendor_preds].min(axis=1)
-            raw_results['Selisih_Prediksi_Biaya'] = raw_results['Prediksi_Biaya_Lain'] - raw_results['PREDIKSI_SPIL']
-            
-            other_vendor_mhr_ratio = [c for c in raw_results.columns if c.startswith('PREDIKSI/MHR_') and 'SPIL' not in c]
-            raw_results['HargaPerMHR_Lain'] = raw_results[other_vendor_mhr_ratio].min(axis=1)
-            raw_results['Selisih_Harga_per_MHR'] = raw_results['HargaPerMHR_Lain'] - raw_results['PREDIKSI/MHR_SPIL']
+                other_vendor_preds = [c for c in raw_results.columns if c.startswith('PREDIKSI_') and 'SPIL' not in c and not c.startswith('PREDIKSI/MHR_')]
+                raw_results['Prediksi_Biaya_Lain'] = raw_results[other_vendor_preds].min(axis=1)
+                raw_results['Selisih_Prediksi_Biaya'] = raw_results['Prediksi_Biaya_Lain'] - raw_results['PREDIKSI_SPIL']
+                
+                other_vendor_mhr_ratio = [c for c in raw_results.columns if c.startswith('PREDIKSI/MHR_') and 'SPIL' not in c]
+                raw_results['HargaPerMHR_Lain'] = raw_results[other_vendor_mhr_ratio].min(axis=1)
+                raw_results['Selisih_Harga_per_MHR'] = raw_results['HargaPerMHR_Lain'] - raw_results['PREDIKSI/MHR_SPIL']
 
-            if allocation_method == 'Prediksi Harga per MHR':
-                sort_key = 'Selisih_Harga_per_MHR'
-            else:
-                sort_key = 'Selisih_Prediksi_Biaya'
-            
-            spil_candidates = raw_results.sort_values(by=sort_key, ascending=False)
-            allocations = {}
-            spil_container_cap = spil_today_cap['kontainer'] if use_container_filter else float('inf')
-            spil_mhr_cap = spil_today_cap['mhr'] if use_mhr_filter else float('inf')
-            unallocated_eors = []
-            
-            for idx, row in spil_candidates.iterrows():
-                eor = row['NO_EOR']
-                mhr_needed = row.get('MHR_SPIL', 0)
-                if pd.isna(mhr_needed): mhr_needed = 0
-                if (not use_container_filter or spil_container_cap > 0) and (not use_mhr_filter or spil_mhr_cap >= mhr_needed):
-                    if allocation_method == 'Prediksi Harga per MHR':
-                        harga_final_value = row['PREDIKSI/MHR_SPIL']
-                    else:
-                        harga_final_value = row['PREDIKSI_SPIL']
-                    allocations[eor] = {'ALOKASI': 'SPIL', 'HARGA_FINAL': harga_final_value}
-                    if use_container_filter: spil_container_cap -= 1
-                    if use_mhr_filter: spil_mhr_cap -= mhr_needed
+                if allocation_method == 'Prediksi Harga per MHR':
+                    sort_key = 'Selisih_Harga_per_MHR'
                 else:
-                    unallocated_eors.append(eor)
-            
-            overflow_df = spil_candidates[spil_candidates['NO_EOR'].isin(unallocated_eors)].copy()
-            
-            if use_wl:
-                waiting_list_candidates = overflow_df.sort_values(by=sort_key, ascending=False)
-                spil_tomorrow_container_cap = spil_tomorrow_cap.get('kontainer', 0) if use_container_filter else float('inf')
-                spil_tomorrow_mhr_cap = spil_tomorrow_cap.get('mhr', 0) if use_mhr_filter else float('inf')
-                remaining_after_wl = []
-                for idx, row in waiting_list_candidates.iterrows():
+                    sort_key = 'Selisih_Prediksi_Biaya'
+                
+                spil_candidates = raw_results.sort_values(by=sort_key, ascending=False)
+                allocations = {}
+                spil_container_cap = spil_today_cap['kontainer'] if use_container_filter else float('inf')
+                spil_mhr_cap = spil_today_cap['mhr'] if use_mhr_filter else float('inf')
+                unallocated_eors = []
+                
+                for idx, row in spil_candidates.iterrows():
                     eor = row['NO_EOR']
                     mhr_needed = row.get('MHR_SPIL', 0)
                     if pd.isna(mhr_needed): mhr_needed = 0
-                    if (not use_container_filter or spil_tomorrow_container_cap > 0) and (not use_mhr_filter or spil_tomorrow_mhr_cap >= mhr_needed):
+                    if (not use_container_filter or spil_container_cap > 0) and (not use_mhr_filter or spil_mhr_cap >= mhr_needed):
                         if allocation_method == 'Prediksi Harga per MHR':
                             harga_final_value = row['PREDIKSI/MHR_SPIL']
                         else:
                             harga_final_value = row['PREDIKSI_SPIL']
-                        allocations[eor] = {'ALOKASI': 'Waiting List SPIL', 'HARGA_FINAL': harga_final_value}
-                        if use_container_filter: spil_tomorrow_container_cap -= 1
-                        if use_mhr_filter: spil_tomorrow_mhr_cap -= mhr_needed
+                        allocations[eor] = {
+                            'ALOKASI': 'SPIL', 
+                            'HARGA_FINAL': harga_final_value
+                        }
+                        if use_container_filter: spil_container_cap -= 1
+                        if use_mhr_filter: spil_mhr_cap -= mhr_needed
                     else:
-                        remaining_after_wl.append(eor)
-                overflow_df = overflow_df[overflow_df['NO_EOR'].isin(remaining_after_wl)].copy()
-
-            if use_ov:
-                other_vendor_candidates = overflow_df.sort_values(by=sort_key, ascending=True)
-                for idx, row in other_vendor_candidates.iterrows():
-                    eor = row['NO_EOR']
-                    allocated = False
-                    cheapest_options = row[other_vendor_preds].dropna().sort_values()
-                    for vendor_price_val in cheapest_options.items():
-                        vendor_name = vendor_price_val[0].replace('PREDIKSI_', '')
-                        mhr_needed = row.get(f'MHR_{vendor_name}', 0)
+                        unallocated_eors.append(eor)
+                
+                overflow_df = spil_candidates[spil_candidates['NO_EOR'].isin(unallocated_eors)].copy()
+                
+                if use_wl:
+                    waiting_list_candidates = overflow_df.sort_values(by=sort_key, ascending=False)
+                    spil_tomorrow_container_cap = spil_tomorrow_cap.get('kontainer', 0) if use_container_filter else float('inf')
+                    spil_tomorrow_mhr_cap = spil_tomorrow_cap.get('mhr', 0) if use_mhr_filter else float('inf')
+                    remaining_after_wl = []
+                    for idx, row in waiting_list_candidates.iterrows():
+                        eor = row['NO_EOR']
+                        mhr_needed = row.get('MHR_SPIL', 0)
                         if pd.isna(mhr_needed): mhr_needed = 0
-                        container_cap = other_vendor_caps.get(vendor_name, {}).get('kontainer', 0) if use_container_filter else float('inf')
-                        mhr_cap = other_vendor_caps.get(vendor_name, {}).get('mhr', 0) if use_mhr_filter else float('inf')
-                        if (not use_container_filter or container_cap > 0) and (not use_mhr_filter or mhr_cap >= mhr_needed):
+                        if (not use_container_filter or spil_tomorrow_container_cap > 0) and (not use_mhr_filter or spil_tomorrow_mhr_cap >= mhr_needed):
                             if allocation_method == 'Prediksi Harga per MHR':
-                                harga_final_value = row.get(f'PREDIKSI/MHR_{vendor_name}', np.nan)
+                                harga_final_value = row['PREDIKSI/MHR_SPIL']
                             else:
-                                harga_final_value = vendor_price_val[1]
-                            allocations[eor] = {'ALOKASI': f'{vendor_name}', 'HARGA_FINAL': harga_final_value}
-                            if use_container_filter: other_vendor_caps[vendor_name]['kontainer'] -= 1
-                            if use_mhr_filter: other_vendor_caps[vendor_name]['mhr'] -= mhr_needed
-                            allocated = True
-                            break
-                    if not allocated:
-                        allocations[eor] = {'ALOKASI': 'Tidak Terhandle', 'HARGA_FINAL': np.nan}
-            else:
-                for eor in overflow_df['NO_EOR']:
-                    allocations[eor] = {'ALOKASI': 'Tidak Terhandle', 'HARGA_FINAL': np.nan}
+                                harga_final_value = row['PREDIKSI_SPIL']
+                            allocations[eor] = {
+                                'ALOKASI': 'Waiting List SPIL', 
+                                'HARGA_FINAL': harga_final_value
+                            }
+                            if use_container_filter: spil_tomorrow_container_cap -= 1
+                            if use_mhr_filter: spil_tomorrow_mhr_cap -= mhr_needed
+                        else:
+                            remaining_after_wl.append(eor)
+                    overflow_df = overflow_df[overflow_df['NO_EOR'].isin(remaining_after_wl)].copy()
 
-            allocations_df = pd.DataFrame.from_dict(allocations, orient='index')
-            final_df = raw_results.set_index('NO_EOR').join(allocations_df).reset_index()
-            return final_df
-        
-        # ... (sisa kode untuk menampilkan hasil, tidak perlu diubah) ...
+                if use_ov:
+                    other_vendor_candidates = overflow_df.sort_values(by=sort_key, ascending=True)
+                    for idx, row in other_vendor_candidates.iterrows():
+                        eor = row['NO_EOR']
+                        allocated = False
+                        cheapest_options = row[other_vendor_preds].dropna().sort_values()
+                        for vendor_price_val in cheapest_options.items():
+                            vendor_name = vendor_price_val[0].replace('PREDIKSI_', '')
+                            mhr_needed = row.get(f'MHR_{vendor_name}', 0)
+                            if pd.isna(mhr_needed): mhr_needed = 0
+                            container_cap = other_vendor_caps.get(vendor_name, {}).get('kontainer', 0) if use_container_filter else float('inf')
+                            mhr_cap = other_vendor_caps.get(vendor_name, {}).get('mhr', 0) if use_mhr_filter else float('inf')
+                            if (not use_container_filter or container_cap > 0) and (not use_mhr_filter or mhr_cap >= mhr_needed):
+                                if allocation_method == 'Prediksi Harga per MHR':
+                                    harga_final_value = row.get(f'PREDIKSI/MHR_{vendor_name}', np.nan)
+                                else:
+                                    harga_final_value = vendor_price_val[1]
+                                allocations[eor] = {
+                                    'ALOKASI': f'{vendor_name}', 
+                                    'HARGA_FINAL': harga_final_value
+                                }
+                                if use_container_filter: other_vendor_caps[vendor_name]['kontainer'] -= 1
+                                if use_mhr_filter: other_vendor_caps[vendor_name]['mhr'] -= mhr_needed
+                                allocated = True
+                                break
+                        if not allocated:
+                            allocations[eor] = {
+                                'ALOKASI': 'Tidak Terhandle', 
+                                'HARGA_FINAL': np.nan
+                            }
+                else:
+                    for eor in overflow_df['NO_EOR']:
+                        allocations[eor] = {
+                            'ALOKASI': 'Tidak Terhandle', 
+                            'HARGA_FINAL': np.nan
+                        }
+
+                allocations_df = pd.DataFrame.from_dict(allocations, orient='index')
+                final_df = raw_results.set_index('NO_EOR').join(allocations_df, how='left').reset_index()
+                                    
+                return final_df
+            except Exception as e:
+                st.error(f"Terjadi kesalahan saat memproses file: {e}")
+                st.exception(e)
+                return pd.DataFrame()
+
         if run_bulk_button and uploaded_file is not None:
             try:
-                uploaded_file_content = uploaded_file.getvalue().decode('utf-8')
+                # --- PERUBAHAN 3: Menyesuaikan pemanggilan fungsi ---
+                uploaded_file_content = uploaded_file.getvalue()
+                file_name = uploaded_file.name
                 spil_today_caps = {"kontainer": spil_container_capacity, "mhr": spil_mhr_capacity}
                 with st.spinner(f'Menjalankan alokasi dengan algoritma "{allocation_method}"...'):
                     final_results = run_spil_centric_allocation(
-                        pipeline, uploaded_file_content, depo_option, allocation_method,
+                        pipeline, uploaded_file_content, file_name, depo_option, allocation_method,
                         spil_today_caps, tomorrow_capacities_input,
                         other_vendor_capacities_input, use_waiting_list, use_other_vendors,
                         use_container_filter, use_mhr_filter
@@ -472,6 +526,10 @@ if pipeline:
                 
                 if not final_results.empty:
                     st.success("✅ Alokasi berhasil diselesaikan!")
+                    
+                    total_warnings = final_results['WARNING_COUNT'].sum()
+                    if total_warnings > 0:
+                        st.warning(f"⚠️ Total ada {int(total_warnings)} material yang tidak ditemukan di data master dan tidak dihitung dalam estimasi.")
                     
                     def get_final_mhr(row):
                         if pd.isna(row['ALOKASI']) or 'Tidak Terhandle' in row['ALOKASI']: return np.nan
@@ -486,49 +544,51 @@ if pipeline:
                     vendor_stats = final_results.groupby('ALOKASI').agg(
                         Jumlah_Kontainer=('NO_EOR', 'nunique'),
                         Total_Biaya=('HARGA_FINAL', 'sum'),
-                        Total_MHR=('MHR', 'sum')
+                        Total_MHR=('MHR', 'sum'),
+                        Total_Warning=('WARNING_COUNT', 'sum')
                     ).reset_index().rename(columns={
                         'ALOKASI': 'STATUS',
-                        'Total_Biaya': 'Total Biaya', # Mengganti nama agar lebih rapi di tabel
+                        'Total_Biaya': 'Total Biaya',
                         'Jumlah_Kontainer': 'Jumlah Kontainer',
-                        'Total_MHR': 'Total MHR'
+                        'Total_MHR': 'Total MHR',
+                        'Total_Warning': 'Material Tidak Dikenali'
                     })
 
-                    # Gunakan .style.format() untuk mengontrol tampilan di Streamlit
                     st.dataframe(vendor_stats.style.format({
                         "Total Biaya": "Rp {:,.0f}",
-                        "Total MHR": "{:,.2f}"
+                        "Total MHR": "{:,.2f}",
+                        "Material Tidak Dikenali": "{:,.0f}"
                     }), use_container_width=True)
 
                     st.markdown("---")
                     st.subheader("Detail Hasil Alokasi")
                     
                     if allocation_method == 'Prediksi Harga per MHR':
-                        display_cols = ['NO_EOR', 'CONTAINER_TYPE', 'ALOKASI', 'HARGA_FINAL', 'MHR', 'Selisih_Harga_per_MHR', 'PREDIKSI/MHR_SPIL', 'HargaPerMHR_Lain']
+                        display_cols = ['NO_EOR', 'CONTAINER_TYPE', 'ALOKASI', 'HARGA_FINAL', 'MHR', 'Selisih_Harga_per_MHR', 'PREDIKSI/MHR_SPIL', 'HargaPerMHR_Lain', 'WARNING_COUNT']
                         rename_map_detail = {
-                            'HARGA_FINAL': 'Harga/MHR Final',
-                            'MHR': 'MHR Final', 'ALOKASI': 'Alokasi', 'NO_EOR': 'No EOR',
+                            'HARGA_FINAL': 'Harga/MHR Final', 'MHR': 'MHR Final', 'ALOKASI': 'Alokasi', 'NO_EOR': 'No EOR',
                             'CONTAINER_TYPE': 'Tipe Kontainer', 'Selisih_Harga_per_MHR': 'Keuntungan per MHR',
-                            'PREDIKSI/MHR_SPIL': 'Harga/MHR SPIL', 'HargaPerMHR_Lain': 'Harga/MHR Lain'
+                            'PREDIKSI/MHR_SPIL': 'Harga/MHR SPIL', 'HargaPerMHR_Lain': 'Harga/MHR Lain',
+                            'WARNING_COUNT': 'Material Tidak Dikenali'
                         }
                         format_map_detail = {
-                            'Harga/MHR Final': 'Rp {:,.0f}/jam',
-                            'MHR Final': '{:,.2f}', 'Keuntungan per MHR': 'Rp {:,.0f}',
-                            'Harga/MHR SPIL': 'Rp {:,.0f}', 'Harga/MHR Lain': 'Rp {:,.0f}'
+                            'Harga/MHR Final': 'Rp {:,.0f}/jam', 'MHR Final': '{:,.2f}', 'Keuntungan per MHR': 'Rp {:,.0f}',
+                            'Harga/MHR SPIL': 'Rp {:,.0f}', 'Harga/MHR Lain': 'Rp {:,.0f}',
+                            'Material Tidak Dikenali': '{:,.0f}'
                         }
                         sort_key_display = 'Keuntungan per MHR'
                     else: 
-                        display_cols = ['NO_EOR', 'CONTAINER_TYPE', 'ALOKASI', 'HARGA_FINAL', 'MHR', 'Selisih_Prediksi_Biaya', 'PREDIKSI_SPIL', 'Prediksi_Biaya_Lain']
+                        display_cols = ['NO_EOR', 'CONTAINER_TYPE', 'ALOKASI', 'HARGA_FINAL', 'MHR', 'Selisih_Prediksi_Biaya', 'PREDIKSI_SPIL', 'Prediksi_Biaya_Lain', 'WARNING_COUNT']
                         rename_map_detail = {
-                            'HARGA_FINAL': 'Biaya Final', 
-                            'MHR': 'MHR Final', 'ALOKASI': 'Alokasi', 'NO_EOR': 'No EOR',
+                            'HARGA_FINAL': 'Biaya Final', 'MHR': 'MHR Final', 'ALOKASI': 'Alokasi', 'NO_EOR': 'No EOR',
                             'CONTAINER_TYPE': 'Tipe Kontainer', 'Selisih_Prediksi_Biaya': 'Potensi Keuntungan',
-                            'PREDIKSI_SPIL': 'Biaya SPIL', 'Prediksi_Biaya_Lain': 'Biaya Lain'
+                            'PREDIKSI_SPIL': 'Biaya SPIL', 'Prediksi_Biaya_Lain': 'Biaya Lain',
+                            'WARNING_COUNT': 'Material Tidak Dikenali'
                         }
                         format_map_detail = {
-                            'Biaya Final': 'Rp {:,.0f}',
-                            'MHR Final': '{:,.2f}', 'Potensi Keuntungan': 'Rp {:,.0f}',
-                            'Biaya SPIL': 'Rp {:,.0f}', 'Biaya Lain': 'Rp {:,.0f}'
+                            'Biaya Final': 'Rp {:,.0f}', 'MHR Final': '{:,.2f}', 'Potensi Keuntungan': 'Rp {:,.0f}',
+                            'Biaya SPIL': 'Rp {:,.0f}', 'Biaya Lain': 'Rp {:,.0f}',
+                            'Material Tidak Dikenali': '{:,.0f}'
                         }
                         sort_key_display = 'Potensi Keuntungan'
 
@@ -544,7 +604,7 @@ if pipeline:
                     
                     with st.expander("Lihat Tabel Alokasi Lengkap", expanded=False):
                         st.caption("Tabel ini menampilkan hasil alokasi final dan semua detail kalkulasi.")
-                        base_info_cols = ['NO_EOR', 'CONTAINER_TYPE', 'ALOKASI', 'HARGA_FINAL', 'MHR', 'Selisih_Prediksi_Biaya', 'Selisih_Harga_per_MHR']
+                        base_info_cols = ['NO_EOR', 'CONTAINER_TYPE', 'ALOKASI', 'HARGA_FINAL', 'MHR', 'Selisih_Prediksi_Biaya', 'Selisih_Harga_per_MHR', 'WARNING_COUNT']
                         pred_cols_all = sorted([col for col in final_results.columns if col.startswith("PREDIKSI_") and not col.startswith("PREDIKSI/MHR_")])
                         mhr_cols_all = sorted([col for col in final_results.columns if col.startswith("MHR_") and col != 'MHR'])
                         ratio_cols_all = sorted([col for col in final_results.columns if col.startswith("PREDIKSI/MHR_")])
@@ -554,11 +614,13 @@ if pipeline:
                         rename_map_comprehensive = {
                             'HARGA_FINAL': 'Biaya Final', 'NO_EOR': 'No EOR', 'CONTAINER_TYPE': 'Tipe Kontainer',
                             'ALOKASI': 'Alokasi', 'Selisih_Prediksi_Biaya': 'Potensi Keuntungan (Total)',
-                            'Selisih_Harga_per_MHR': 'Potensi Keuntungan (per MHR)', 'MHR': 'MHR Final'
+                            'Selisih_Harga_per_MHR': 'Potensi Keuntungan (per MHR)', 'MHR': 'MHR Final',
+                            'WARNING_COUNT': 'Material Tidak Dikenali'
                         }
                         format_dict_full = {
                             'Biaya Final': 'Rp {:,.0f}', 'MHR Final': '{:,.2f}',
-                            'Potensi Keuntungan (Total)': 'Rp {:,.0f}', 'Potensi Keuntungan (per MHR)': 'Rp {:,.0f}/jam'
+                            'Potensi Keuntungan (Total)': 'Rp {:,.0f}', 'Potensi Keuntungan (per MHR)': 'Rp {:,.0f}/jam',
+                            'Material Tidak Dikenali': '{:,.0f}'
                         }
                         for col in detail_df_comprehensive.columns:
                             if col.startswith('PREDIKSI_') and not col.startswith('PREDIKSI/MHR_'):
@@ -574,25 +636,16 @@ if pipeline:
                                 rename_map_comprehensive[col] = new_name
                                 format_dict_full[new_name] = 'Rp {:,.0f}/jam'
                         display_df_renamed = detail_df_comprehensive.rename(columns=rename_map_comprehensive)
-                        # 1. Tentukan kolom acuan untuk sorting
                         sort_column = 'Potensi Keuntungan (Total)'
                         if sort_column not in display_df_renamed.columns:
-                            sort_column = 'No EOR' # Kolom cadangan jika kolom utama tidak ada
-
-                        # 2. Urutkan DataFrame terlebih dahulu
+                            sort_column = 'No EOR'
                         sorted_df = display_df_renamed.sort_values(by=sort_column, ascending=False)
-
-                        # 3. Tampilkan DataFrame yang sudah diurutkan dan diberi style
                         st.dataframe(
                             sorted_df.style.format(format_dict_full, na_rep='-'),
                             height=600,
                             use_container_width=True
                         )
-
-                        # 4. Siapkan data CSV dari DataFrame yang sudah diurutkan
                         csv_pred_detail = sorted_df.to_csv(index=False).encode('utf-8')
-
-                        # 5. Tampilkan tombol download
                         st.download_button(
                             label="Download Tabel Lengkap",
                             data=csv_pred_detail,
@@ -606,4 +659,4 @@ if pipeline:
         elif run_bulk_button:
             st.warning("Mohon unggah file CSV terlebih dahulu.")
 else:
-    st.warning("Pipeline kalkulasi tidak dapat dimuat. Pastikan file master tersedia.")
+    st.warning("Pipeline kalkulasi tidak dapat dimuat. Pastikan file master tersedia dan koneksi berhasil.")
