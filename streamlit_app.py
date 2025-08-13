@@ -599,7 +599,10 @@ if pipeline:
                         display_df.sort_values(by=sort_key_display, ascending=False).style.format(format_map_detail, na_rep='-'),
                         height=600, use_container_width=True
                     )
-                    csv_final = display_df.to_csv(index=False).encode('utf-8')
+
+                    sorted_display_df = display_df.sort_values(by=sort_key_display, ascending=False)
+
+                    csv_final = sorted_display_df.to_csv(index=False).encode('utf-8')
                     st.download_button(label="Download Hasil Alokasi", data=csv_final, file_name=f"hasil_alokasi_{depo_option}.csv", mime="text/csv")
                     
                     with st.expander("Lihat Tabel Alokasi Lengkap", expanded=False):
