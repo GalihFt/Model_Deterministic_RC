@@ -294,10 +294,31 @@ if pipeline:
         st.info("Pastikan file CSV, Excel, atau ODS yang diupload memiliki kolom: `NO_EOR`, `NOCONTAINER` , `MATERIAL`, `QTY`.")
         
         template_data = {
-            'NO_EOR': ['EOR001', 'EOR001', 'EOR002'],
-            'NOCONTAINER': ['ABCU1234567', 'ABCU1234567', 'DEFU7654321'],
-            'MATERIAL': ['MAT001', 'MAT002', 'MAT003'],
-            'QTY': [1, 2, 3]
+            'NO_EOR': [
+                'EOR/00000004/01/2023',
+                'EOR/00000004/01/2023',
+                'EOR/00000004/01/2023',
+                'EOR/00000005/01/2023',
+                'EOR/00000005/01/2023',
+                'EOR/00000005/01/2023'
+            ],
+            'NOCONTAINER': [
+                'SPNU2839051',
+                'SPNU2839051',
+                'SPNU2839051',
+                'SPNU2759465',
+                'SPNU2759465',
+                'SPNU2759465'
+            ],
+            'KETERANGAN': [
+                'MISCELENEOUS - SECURING DEVICE / OTHER MATERIAL REMOVE',
+                'CROSS MEMBER - INSERT 30 CM',
+                'FORKLIFT POCKET - WEB STRAIGHTEN',
+                'SIDE PANEL - STRAIGHTEN AND WELD 30 CM',
+                'ROOF PANEL STRAIGHTEN AND WELD 30 CM',
+                'SIDE PANEL - STRAIGHTEN 30 X 90 CM'
+            ],
+            'QTY': [1, 1, 2, 1, 1, 1]
         }
         template_df = pd.DataFrame(template_data)
         
