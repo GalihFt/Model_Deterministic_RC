@@ -49,16 +49,14 @@ class DeterministicCostCalculator:
         self.master_material = master_material_df
         self.depo_config = {
             "SBY": {"vendors": ['MTCP', 'SPIL']},
-            "JKT": {"vendors": ['MDS', 'SPIL', 'MDSBC', 'MACBC', 'PTMAC', 'MCPNL', 'MCPCONCH']}
+            "JKT": {"vendors": ['SPIL','MCPNL']}
         }
         self.labourvendor_dict = {
-            "MACBC": 29000, "MCPCONCH": 29000, "MCPNL": 15000,
-            "MDS": 29000, "MDSBC": 29000, "MTCP": 15000,
-            "PTMAC": 29000, "SPIL": 14000
+            "MCPNL": 15000, "MTCP": 15000,"SPIL": 14000
         }
-        self.surcharge_vendor = ["MCPCONCH", "MCPNL", "MDS", "MTCP", "PTMAC"]
+        self.surcharge_vendor = ["MCPNL", "MTCP"]
         self.validity_map = {
-            "JKT": {'MDS': ['A','Others'], 'SPIL': ['A', 'B', 'C','Others'], 'MDSBC': ['B', 'C','Others'], 'MACBC': ['B', 'C','Others'], 'PTMAC': ['A','Others'], 'MCPNL': ['A', 'B', 'C','Others'], 'MCPCONCH': ['B', 'C','Others']},
+            "JKT": {'SPIL': ['A', 'B', 'C','Others'],'MCPNL': ['A', 'B', 'C','Others']},
             "SBY": {'MTCP': ['A', 'B', 'C','Others'], 'SPIL': ['A', 'B', 'C','Others']}
         }
 
