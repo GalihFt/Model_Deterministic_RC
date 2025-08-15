@@ -420,7 +420,16 @@ if pipeline:
                 data['CONTAINER_TYPE'] = data['CONTAINER_SIZE'] + data['CONTAINER_GRADE']
                 data["DEPO"] = depo_option
                 
+                # --- PENAMBAHAN FITUR: HITUNG JUMLAH MATERIAL ---
+                material_counts = data.groupby('NO_EOR').size().reset_index(name='JUMLAH_MATERIAL')
+                # --- AKHIR PENAMBAHAN FITUR ---
+
                 raw_results = _pipeline.run_pipeline(data)
+                
+                # --- PENAMBAHAN FITUR: GABUNGKAN JUMLAH MATERIAL KE HASIL ---
+                raw_results = pd.merge(raw_results, material_counts, on='NO_EOR', how='left')
+                # --- AKHIR PENAMBAHAN FITUR ---
+
                 if 'PREDIKSI_SPIL' not in raw_results.columns:
                     st.error("Perhitungan untuk SPIL tidak tersedia.")
                     return pd.DataFrame()
@@ -515,7 +524,7 @@ if pipeline:
 
                 allocations_df = pd.DataFrame.from_dict(allocations, orient='index')
                 final_df = raw_results.set_index('NO_EOR').join(allocations_df, how='left').reset_index()
-                                        
+                                            
                 return final_df
             except Exception as e:
                 st.error(f"Terjadi kesalahan saat memproses file: {e}")
@@ -555,52 +564,61 @@ if pipeline:
                         Jumlah_Kontainer=('NO_EOR', 'nunique'),
                         Total_Biaya=('HARGA_FINAL', 'sum'),
                         Total_MHR=('MHR', 'sum'),
+                        Jumlah_Material=('JUMLAH_MATERIAL', 'sum'), 
                         Total_Warning=('WARNING_COUNT', 'sum')
                     ).reset_index().rename(columns={
                         'ALOKASI': 'STATUS',
                         'Total_Biaya': 'Total Biaya',
                         'Jumlah_Kontainer': 'Jumlah Kontainer',
                         'Total_MHR': 'Total MHR',
+                        'Jumlah_Material': 'Jumlah Material', 
                         'Total_Warning': 'Material Tidak Dikenali'
                     })
 
                     st.dataframe(vendor_stats.style.format({
                         "Total Biaya": "Rp {:,.0f}",
                         "Total MHR": "{:,.2f}",
+                        "Jumlah Material": "{:,.0f}", 
                         "Material Tidak Dikenali": "{:,.0f}"
                     }), use_container_width=True)
 
                     st.markdown("---")
                     st.subheader("Detail Hasil Alokasi")
                     
+                    # --- PERUBAHAN DI SINI: Mengatur urutan kolom ---
                     if allocation_method == 'Prediksi Harga per MHR':
-                        display_cols = ['NO_EOR', 'CONTAINER_TYPE', 'ALOKASI', 'HARGA_FINAL', 'MHR', 'Selisih_Harga_per_MHR', 'PREDIKSI/MHR_SPIL', 'HargaPerMHR_Lain', 'WARNING_COUNT']
+                        display_cols = ['NO_EOR', 'CONTAINER_TYPE', 'ALOKASI', 'HARGA_FINAL', 'MHR', 'Selisih_Harga_per_MHR', 'PREDIKSI/MHR_SPIL', 'HargaPerMHR_Lain', 'WARNING_COUNT', 'JUMLAH_MATERIAL']
                         rename_map_detail = {
                             'HARGA_FINAL': 'Harga/MHR Final', 'MHR': 'MHR Final', 'ALOKASI': 'Alokasi', 'NO_EOR': 'No EOR',
                             'CONTAINER_TYPE': 'Tipe Kontainer', 'Selisih_Harga_per_MHR': 'Keuntungan per MHR',
                             'PREDIKSI/MHR_SPIL': 'Harga/MHR SPIL', 'HargaPerMHR_Lain': 'Harga/MHR Lain',
-                            'WARNING_COUNT': 'Material Tidak Dikenali'
+                            'WARNING_COUNT': 'Material Tidak Dikenali',
+                            'JUMLAH_MATERIAL': 'Jumlah Material'
                         }
                         format_map_detail = {
                             'Harga/MHR Final': 'Rp {:,.0f}/jam', 'MHR Final': '{:,.2f}', 'Keuntungan per MHR': 'Rp {:,.0f}',
                             'Harga/MHR SPIL': 'Rp {:,.0f}', 'Harga/MHR Lain': 'Rp {:,.0f}',
-                            'Material Tidak Dikenali': '{:,.0f}'
+                            'Material Tidak Dikenali': '{:,.0f}',
+                            'Jumlah Material': '{:,.0f}'
                         }
                         sort_key_display = 'Keuntungan per MHR'
                     else: 
-                        display_cols = ['NO_EOR', 'CONTAINER_TYPE', 'ALOKASI', 'HARGA_FINAL', 'MHR', 'Selisih_Prediksi_Biaya', 'PREDIKSI_SPIL', 'Prediksi_Biaya_Lain', 'WARNING_COUNT']
+                        display_cols = ['NO_EOR', 'CONTAINER_TYPE', 'ALOKASI', 'HARGA_FINAL', 'MHR', 'Selisih_Prediksi_Biaya', 'PREDIKSI_SPIL', 'Prediksi_Biaya_Lain', 'WARNING_COUNT', 'JUMLAH_MATERIAL']
                         rename_map_detail = {
                             'HARGA_FINAL': 'Biaya Final', 'MHR': 'MHR Final', 'ALOKASI': 'Alokasi', 'NO_EOR': 'No EOR',
                             'CONTAINER_TYPE': 'Tipe Kontainer', 'Selisih_Prediksi_Biaya': 'Potensi Keuntungan',
                             'PREDIKSI_SPIL': 'Biaya SPIL', 'Prediksi_Biaya_Lain': 'Biaya Lain',
-                            'WARNING_COUNT': 'Material Tidak Dikenali'
+                            'WARNING_COUNT': 'Material Tidak Dikenali',
+                            'JUMLAH_MATERIAL': 'Jumlah Material'
                         }
                         format_map_detail = {
                             'Biaya Final': 'Rp {:,.0f}', 'MHR Final': '{:,.2f}', 'Potensi Keuntungan': 'Rp {:,.0f}',
                             'Biaya SPIL': 'Rp {:,.0f}', 'Biaya Lain': 'Rp {:,.0f}',
-                            'Material Tidak Dikenali': '{:,.0f}'
+                            'Material Tidak Dikenali': '{:,.0f}',
+                            'Jumlah Material': '{:,.0f}'
                         }
                         sort_key_display = 'Potensi Keuntungan'
+                    # --- AKHIR PERUBAHAN ---
 
                     display_cols_exist = [col for col in display_cols if col in final_results.columns]
                     display_df = final_results[display_cols_exist].rename(columns=rename_map_detail)
@@ -615,27 +633,35 @@ if pipeline:
                     csv_final = sorted_display_df.to_csv(index=False).encode('utf-8')
                     st.download_button(label="Download Hasil Alokasi", data=csv_final, file_name=f"hasil_alokasi_{depo_option}.csv", mime="text/csv")
                     
-                    # --- FITUR BARU: Menampilkan Material yang Tidak Dikenali ---
                     with st.expander("Lihat Tabel Alokasi Lengkap", expanded=False):
                         st.caption("Tabel ini menampilkan hasil alokasi final dan semua detail kalkulasi.")
-                        base_info_cols = ['NO_EOR', 'CONTAINER_TYPE', 'ALOKASI', 'HARGA_FINAL', 'MHR', 'Selisih_Prediksi_Biaya', 'Selisih_Harga_per_MHR', 'WARNING_COUNT']
+                        
+                        # --- PERUBAHAN DI SINI: Mengatur urutan kolom untuk tabel super lengkap ---
+                        base_info_cols = ['NO_EOR', 'CONTAINER_TYPE', 'ALOKASI', 'HARGA_FINAL', 'MHR', 'Selisih_Prediksi_Biaya', 'Selisih_Harga_per_MHR']
                         pred_cols_all = sorted([col for col in final_results.columns if col.startswith("PREDIKSI_") and not col.startswith("PREDIKSI/MHR_")])
                         mhr_cols_all = sorted([col for col in final_results.columns if col.startswith("MHR_") and col != 'MHR'])
                         ratio_cols_all = sorted([col for col in final_results.columns if col.startswith("PREDIKSI/MHR_")])
-                        comprehensive_cols = base_info_cols + pred_cols_all + mhr_cols_all + ratio_cols_all
+                        
+                        comprehensive_cols = base_info_cols + pred_cols_all + mhr_cols_all + ratio_cols_all + ['WARNING_COUNT', 'JUMLAH_MATERIAL']
+                        # --- AKHIR PERUBAHAN ---
+
                         comprehensive_cols_exist = [col for col in comprehensive_cols if col in final_results.columns]
                         detail_df_comprehensive = final_results[comprehensive_cols_exist]
+                        
                         rename_map_comprehensive = {
                             'HARGA_FINAL': 'Biaya Final', 'NO_EOR': 'No EOR', 'CONTAINER_TYPE': 'Tipe Kontainer',
                             'ALOKASI': 'Alokasi', 'Selisih_Prediksi_Biaya': 'Potensi Keuntungan (Total)',
                             'Selisih_Harga_per_MHR': 'Potensi Keuntungan (per MHR)', 'MHR': 'MHR Final',
-                            'WARNING_COUNT': 'Material Tidak Dikenali'
+                            'WARNING_COUNT': 'Material Tidak Dikenali',
+                            'JUMLAH_MATERIAL': 'Jumlah Material'
                         }
                         format_dict_full = {
                             'Biaya Final': 'Rp {:,.0f}', 'MHR Final': '{:,.2f}',
                             'Potensi Keuntungan (Total)': 'Rp {:,.0f}', 'Potensi Keuntungan (per MHR)': 'Rp {:,.0f}/jam',
-                            'Material Tidak Dikenali': '{:,.0f}'
+                            'Material Tidak Dikenali': '{:,.0f}',
+                            'Jumlah Material': '{:,.0f}'
                         }
+
                         for col in detail_df_comprehensive.columns:
                             if col.startswith('PREDIKSI_') and not col.startswith('PREDIKSI/MHR_'):
                                 new_name = col.replace('PREDIKSI_', 'Biaya ')
@@ -649,11 +675,14 @@ if pipeline:
                                 new_name = col.replace('PREDIKSI/MHR_', 'Biaya/MHR ')
                                 rename_map_comprehensive[col] = new_name
                                 format_dict_full[new_name] = 'Rp {:,.0f}/jam'
+                        
                         display_df_renamed = detail_df_comprehensive.rename(columns=rename_map_comprehensive)
+                        
                         sort_column = 'Potensi Keuntungan (Total)'
                         if sort_column not in display_df_renamed.columns:
                             sort_column = 'No EOR'
                         sorted_df = display_df_renamed.sort_values(by=sort_column, ascending=False)
+                        
                         st.dataframe(
                             sorted_df.style.format(format_dict_full, na_rep='-'),
                             height=600,
@@ -667,25 +696,23 @@ if pipeline:
                             mime="text/csv",
                             key="download_super_lengkap"
                         )
+
                     with st.expander("Cek Detail Material Tidak Dikenali", expanded=False):
                         try:
-                            # Re-process the uploaded content to get a list of unmatched materials
                             file_extension_check = file_name.split('.')[-1].lower()
                             data_raw_check = None
                             
                             if file_extension_check == 'csv':
                                 content_str_check = uploaded_file_content.decode('utf-8')
-                                # Try to read with common delimiters
                                 for delimiter in [',', ';', '\t']:
                                     try:
                                         temp_df = pd.read_csv(StringIO(content_str_check), delimiter=delimiter)
-                                        # Check if MATERIAL column exists to confirm correct parsing
                                         if 'MATERIAL' in [c.strip() for c in temp_df.columns]:
                                             data_raw_check = temp_df
                                             break
                                     except Exception:
                                         continue
-                                if data_raw_check is None: # Fallback
+                                if data_raw_check is None:
                                      data_raw_check = pd.read_csv(StringIO(content_str_check), engine='python')
 
                             elif file_extension_check in ['xlsx', 'xls']:
@@ -710,14 +737,13 @@ if pipeline:
                                         st.success("✅ Semua material dari file input Anda berhasil dikenali di data master.")
                                 else:
                                     st.error("Kolom 'MATERIAL' tidak ditemukan di file yang diunggah untuk pengecekan.")
-                            elif data_raw_check is not None: # Is empty
+                            elif data_raw_check is not None:
                                 st.info("File input kosong.")
-                            else: # Is None
+                            else:
                                 st.error("Gagal membaca file untuk pengecekan material.")
 
                         except Exception as e:
                             st.error(f"Gagal melakukan pengecekan material: {e}")
-                    # --- AKHIR FITUR BARU ---
 
             except Exception as e:
                 st.error(f"Terjadi error: {str(e)}")
