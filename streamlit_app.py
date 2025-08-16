@@ -340,7 +340,7 @@ if pipeline:
         
         allocation_method = st.selectbox(
             "Pilih Algoritma Alokasi",
-            ("Prediksi Total", "Prediksi Harga per MHR"),
+            ("Prediksi Harga per MHR", "Prediksi Total"),
             key="alloc_method",
             help="**Prediksi Total**: Memprioritaskan kontainer dengan potensi penghematan biaya total terbesar. **Prediksi Harga per MHR**: Memprioritaskan kontainer dengan penghematan biaya per jam kerja (MHR) terbesar."
         )
