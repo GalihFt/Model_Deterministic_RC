@@ -214,7 +214,7 @@ if pipeline:
         st.header("⚙️ Parameter Global")
         depo_option = st.selectbox("Pilih DEPO", ["SBY","JKT"], key="global_depo")
         # Tambahkan tombol refresh
-        if st.button("Refresh Data Master", help="Klik untuk memperbarui data master dari Google Sheet"):
+        if st.button("Refresh Dashboard", help="Klik untuk memperbarui data master dari Google Sheet"):
             # Clear cache untuk memaksa reload data
             st.cache_data.clear()
             st.rerun()
