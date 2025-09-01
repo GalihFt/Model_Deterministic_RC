@@ -49,14 +49,19 @@ class DeterministicCostCalculator:
         self.master_material = master_material_df
         self.depo_config = {
             "SBY": {"vendors": ['MTCP', 'SPIL']},
-            "JKT": {"vendors": ['SPIL','MCPNL']}
+            "JKT": {"vendors": ['SPIL','MCPNL', 'MDS', 'MDSBC', 'MAC', 'MACBC', 'ABC']}
         }
         self.labourvendor_dict = {
-            "MCPNL": 15000, "MTCP": 15000,"SPIL": 14000
+            "MCPNL": 15000, "MTCP": 15000,"SPIL": 14000, "MDS" : 15000, "MDSBC":29000,
+            "MAC" : 15000, "MACBC" : 29000, "ABC" : 15000
         }
-        self.surcharge_vendor = ["MCPNL", "MTCP"]
+        self.surcharge_vendor = ["MCPNL", "MTCP", "MDS", "MAC", "ABC"]
         self.validity_map = {
-            "JKT": {'SPIL': ['A', 'B', 'C','Others'],'MCPNL': ['A', 'B', 'C','Others']},
+            "JKT": {'SPIL': ['A', 'B', 'C','Others'],'MCPNL': ['A', 'B', 'C','Others'],
+                    'MDS': ['A'],'MDSBC': ['B', 'C','Others'],
+                    'MAC': ['A'],'MACBC': ['B', 'C','Others'],
+                    'ABC': ['A']},
+
             "SBY": {'MTCP': ['A', 'B', 'C','Others'], 'SPIL': ['A', 'B', 'C','Others']}
         }
 
@@ -164,7 +169,7 @@ class DeterministicCostCalculator:
         final_df['WARNING_COUNT'] = final_df['WARNING_COUNT'].fillna(0).astype(int)
         
         return final_df
-    
+        
 # ==============================================================================
 # UI STREAMLIT DAN LOGIKA APLIKASI
 # ==============================================================================
@@ -176,6 +181,7 @@ def load_master_data():
         creds = ServiceAccountCredentials.from_json_keyfile_dict(
             st.secrets["google_service_account"], scope
         )
+        
         client = gspread.authorize(creds)
 
         # Replace with your Spreadsheet ID
@@ -229,6 +235,7 @@ if pipeline:
         st.info("Masukkan detail perbaikan untuk satu kontainer untuk melihat perbandingan biaya antar vendor.")
         num_entries = st.number_input("Jumlah Item Kerusakan", min_value=1, max_value=30, value=3, help="Tentukan berapa banyak baris kerusakan yang akan Anda masukkan.", key="manual_num_entries")
         MATERIAL_OPTIONS = ["- Pilih Material -"] + sorted(master_material_df["MATERIAL"].dropna().unique().tolist())
+        
         with st.form("manual_entry_form"):
             container_grade = st.selectbox("Kontainer Grade", ['A', 'B', 'C'], key="manual_grade")
             container_size = st.selectbox("Ukuran Kontainer", ['20', '40'], key="manual_size")
@@ -345,6 +352,15 @@ if pipeline:
             help="**Prediksi Total**: Memprioritaskan kontainer dengan potensi penghematan biaya total terbesar. **Prediksi Harga per MHR**: Memprioritaskan kontainer dengan penghematan biaya per jam kerja (MHR) terbesar."
         )
 
+        # --- PERUBAHAN FITUR: Prioritas Perbaikan (Multi-select) ---
+        priority_filter_options = st.multiselect(
+            "Prioritas Perbaikan (Opsional)",
+            options=["20A", "20B", "20C", "40A", "40B", "40C", "Others"],
+            key="priority_filter",
+            help="Pilih satu atau lebih tipe kontainer yang ingin diproses. Jika tidak ada yang dipilih, semua tipe akan diproses."
+        )
+        # --- AKHIR PERUBAHAN FITUR ---
+
         st.markdown("---")
         
         # --- PERUBAHAN: PENGATURAN KAPASITAS VENDOR ---
@@ -378,7 +394,8 @@ if pipeline:
         run_bulk_button = st.button("Cek Alokasi", type="primary", key="spil_run")
         
         @st.cache_data
-        def run_spil_centric_allocation(_pipeline, uploaded_file_content, file_name, depo_option, allocation_method, spil_today_cap, other_vendor_caps, use_ov, use_container_filter, use_mhr_filter):
+        # --- PERUBAHAN FITUR: Menambahkan parameter priority_types (list) ---
+        def run_spil_centric_allocation(_pipeline, uploaded_file_content, file_name, depo_option, allocation_method, priority_types, spil_today_cap, other_vendor_caps, use_ov, use_container_filter, use_mhr_filter):
             try:
                 file_extension = file_name.split('.')[-1].lower()
                 
@@ -393,7 +410,7 @@ if pipeline:
                         except Exception:
                             continue
                     if 'data_raw' not in locals():
-                         data_raw = pd.read_csv(StringIO(content_str), engine='python')
+                        data_raw = pd.read_csv(StringIO(content_str), engine='python')
                 elif file_extension in ['xlsx', 'xls']:
                     data_raw = pd.read_excel(BytesIO(uploaded_file_content))
                 elif file_extension == 'ods':
@@ -419,6 +436,21 @@ if pipeline:
                 )
                 data['CONTAINER_TYPE'] = data['CONTAINER_SIZE'] + data['CONTAINER_GRADE']
                 data["DEPO"] = depo_option
+
+                # --- PERUBAHAN FITUR: Logika pemfilteran berdasarkan prioritas (Multi-select) ---
+                if priority_types: # Cek apakah list tidak kosong
+                    initial_rows = len(data)
+                    # Filter EOR yang memiliki setidaknya satu baris dengan CONTAINER_TYPE yang dipilih
+                    eors_to_keep = data[data['CONTAINER_TYPE'].isin(priority_types)]['NO_EOR'].unique()
+                    data = data[data['NO_EOR'].isin(eors_to_keep)].copy()
+                    
+                    selected_priorities_str = ", ".join(priority_types)
+                    if data.empty:
+                        st.warning(f"Tidak ada data yang cocok dengan prioritas perbaikan yang dipilih: '{selected_priorities_str}'.")
+                        return pd.DataFrame() # Menghentikan proses jika tidak ada data
+                    else:
+                        st.info(f"Memfilter data untuk prioritas: '{selected_priorities_str}'. Hanya {len(data['NO_EOR'].unique())} dari {len(data_raw['NO_EOR'].unique())} EOR yang akan diproses.")
+                # --- AKHIR PERUBAHAN FITUR ---
                 
                 # --- PENAMBAHAN FITUR: HITUNG JUMLAH MATERIAL ---
                 material_counts = data.groupby('NO_EOR').size().reset_index(name='JUMLAH_MATERIAL')
@@ -465,10 +497,15 @@ if pipeline:
                             harga_final_value = row['PREDIKSI/MHR_SPIL']
                         else:
                             harga_final_value = row['PREDIKSI_SPIL']
+                        
+                        # --- PERUBAHAN DI SINI ---
                         allocations[eor] = {
                             'ALOKASI': 'SPIL', 
-                            'HARGA_FINAL': harga_final_value
+                            'HARGA_FINAL': harga_final_value,
+                            'BIAYA_TOTAL_ALOKASI': row['PREDIKSI_SPIL'] # Selalu simpan biaya total aktual
                         }
+                        # --- AKHIR PERUBAHAN ---
+
                         if use_container_filter: spil_container_cap -= 1
                         if use_mhr_filter: spil_mhr_cap -= mhr_needed
                     else:
@@ -502,29 +539,38 @@ if pipeline:
                             mhr_cap = other_vendor_caps.get(vendor_name, {}).get('mhr', 0) if use_mhr_filter else float('inf')
                             
                             if (not use_container_filter or container_cap > 0) and (not use_mhr_filter or mhr_cap >= mhr_needed):
+                                # --- PERUBAHAN DI SINI ---
                                 allocations[eor] = {
                                     'ALOKASI': f'{vendor_name}', 
-                                    'HARGA_FINAL': vendor_price_val[1]
+                                    'HARGA_FINAL': vendor_price_val[1],
+                                    'BIAYA_TOTAL_ALOKASI': row[f'PREDIKSI_{vendor_name}'] # Selalu simpan biaya total aktual
                                 }
+                                # --- AKHIR PERUBAHAN ---
                                 if use_container_filter: other_vendor_caps[vendor_name]['kontainer'] -= 1
                                 if use_mhr_filter: other_vendor_caps[vendor_name]['mhr'] -= mhr_needed
                                 allocated = True
                                 break # Move to next EOR once allocated
                         if not allocated:
+                            # --- PERUBAHAN DI SINI ---
                             allocations[eor] = {
                                 'ALOKASI': 'Tidak Terhandle', 
-                                'HARGA_FINAL': np.nan
+                                'HARGA_FINAL': np.nan,
+                                'BIAYA_TOTAL_ALOKASI': np.nan
                             }
+                            # --- AKHIR PERUBAHAN ---
                 else: # If not using other vendors
                     for eor in overflow_df['NO_EOR']:
+                        # --- PERUBAHAN DI SINI ---
                         allocations[eor] = {
                             'ALOKASI': 'Tidak Terhandle', 
-                            'HARGA_FINAL': np.nan
+                            'HARGA_FINAL': np.nan,
+                            'BIAYA_TOTAL_ALOKASI': np.nan
                         }
+                        # --- AKHIR PERUBAHAN ---
 
                 allocations_df = pd.DataFrame.from_dict(allocations, orient='index')
                 final_df = raw_results.set_index('NO_EOR').join(allocations_df, how='left').reset_index()
-                                            
+                                                        
                 return final_df
             except Exception as e:
                 st.error(f"Terjadi kesalahan saat memproses file: {e}")
@@ -539,6 +585,7 @@ if pipeline:
                 with st.spinner(f'Menjalankan alokasi dengan algoritma "{allocation_method}"...'):
                     final_results = run_spil_centric_allocation(
                         pipeline, uploaded_file_content, file_name, depo_option, allocation_method,
+                        priority_filter_options, # <-- Menggunakan variabel baru (list)
                         spil_today_caps, other_vendor_capacities_input, use_other_vendors,
                         use_container_filter, use_mhr_filter
                     )
@@ -560,9 +607,10 @@ if pipeline:
                     st.markdown("---")
                     st.subheader("Ringkasan Hasil Alokasi")
                     
+                    # --- PERUBAHAN DI SINI: Gunakan 'BIAYA_TOTAL_ALOKASI' untuk agregasi ---
                     vendor_stats = final_results.groupby('ALOKASI').agg(
                         Jumlah_Kontainer=('NO_EOR', 'nunique'),
-                        Total_Biaya=('HARGA_FINAL', 'sum'),
+                        Total_Biaya=('BIAYA_TOTAL_ALOKASI', 'sum'), # Menggunakan kolom biaya total yang benar
                         Total_MHR=('MHR', 'sum'),
                         Jumlah_Material=('JUMLAH_MATERIAL', 'sum'), 
                         Total_Warning=('WARNING_COUNT', 'sum')
@@ -574,6 +622,7 @@ if pipeline:
                         'Jumlah_Material': 'Jumlah Material', 
                         'Total_Warning': 'Material Tidak Dikenali'
                     })
+                    # --- AKHIR PERUBAHAN ---
 
                     st.dataframe(vendor_stats.style.format({
                         "Total Biaya": "Rp {:,.0f}",
@@ -713,7 +762,7 @@ if pipeline:
                                     except Exception:
                                         continue
                                 if data_raw_check is None:
-                                     data_raw_check = pd.read_csv(StringIO(content_str_check), engine='python')
+                                    data_raw_check = pd.read_csv(StringIO(content_str_check), engine='python')
 
                             elif file_extension_check in ['xlsx', 'xls']:
                                 data_raw_check = pd.read_excel(BytesIO(uploaded_file_content))
@@ -752,3 +801,4 @@ if pipeline:
             st.warning("Mohon unggah file terlebih dahulu.")
 else:
     st.warning("Pipeline kalkulasi tidak dapat dimuat. Pastikan file master tersedia dan koneksi berhasil.")
+
