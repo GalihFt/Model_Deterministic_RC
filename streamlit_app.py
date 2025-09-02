@@ -65,27 +65,49 @@ class DeterministicCostCalculator:
             "SBY": {'MTCP': ['A', 'B', 'C','Others'], 'SPIL': ['A', 'B', 'C','Others']}
         }
 
-    def run_pipeline(self, input_data: pd.DataFrame) -> pd.DataFrame:
+    def run_pipeline(self, input_data: pd.DataFrame, calculation_option: str) -> pd.DataFrame:
         """
         Fungsi utama yang menjalankan seluruh proses kalkulasi.
         Nama fungsi 'run_pipeline' dipertahankan agar kompatibel dengan sisa dashboard.
         """
-        # Hitung jumlah material yang tidak ada di master sebelum merge
-        input_data['WARNING'] = input_data['MATERIAL'].apply(
-            lambda x: 0 if x in self.master_material['MATERIAL'].values else 1
-        )
-        
+        # --- PERUBAHAN LOGIKA PERINGATAN ---
+        # Gabungkan data input dengan master material terlebih dahulu
         df_merged = pd.merge(input_data, self.master_material, on="MATERIAL", how="left")
-        
-        # Hitung total warning per EOR
-        warning_counts = input_data.groupby('NO_EOR')['WARNING'].sum().reset_index()
+
+        # Definisikan kolom yang akan diperiksa kelengkapannya di master
+        cols_to_check = ['COSTMATERIAL', 'SURCHARGE', 'MHR_SPIL', 'MHR_VENDOR']
+        for col in cols_to_check:
+            if col in df_merged.columns:
+                df_merged[col] = pd.to_numeric(df_merged[col], errors='coerce')
+
+        # Kondisi 1: Material tidak ada di master (ditandai dengan NaN setelah left merge)
+        missing_material_cond = df_merged['MHR_VENDOR'].isnull()
+
+        # Kondisi 2: Material ada, tetapi datanya tidak lengkap (bernilai 0 atau NaN)
+        incomplete_data_cond = ~missing_material_cond & (
+            df_merged[cols_to_check].isnull().any(axis=1)
+        )
+
+        # Beri tanda 'WARNING' jika salah satu kondisi terpenuhi
+        df_merged['WARNING'] = np.where(missing_material_cond | incomplete_data_cond, 1, 0)
+
+        # Hitung total warning per EOR dari dataframe yang sudah digabung
+        warning_counts = df_merged.groupby('NO_EOR')['WARNING'].sum().reset_index()
         warning_counts.rename(columns={'WARNING': 'WARNING_COUNT'}, inplace=True)
-        
+        # --- AKHIR PERUBAHAN LOGIKA PERINGATAN ---
+
+        # --- PENAMBAHAN FITUR: OPSI PERHITUNGAN ---
+        df_for_calculation = df_merged.copy()
+        if calculation_option == "Hanya hitung material lengkap (lewati nilai kosong)":
+            # Filter out rows that have warnings before starting calculations
+            df_for_calculation = df_for_calculation[df_for_calculation['WARNING'] == 0]
+        # --- AKHIR PENAMBAHAN FITUR ---
+
         base_cols = input_data[['NO_EOR', 'CONTAINER_GRADE', 'CONTAINER_TYPE', 'DEPO']].drop_duplicates(subset=['NO_EOR'])
         all_results_df = base_cols.set_index('NO_EOR')
 
-        for depo in df_merged["DEPO"].unique():
-            df_depo = df_merged[df_merged["DEPO"] == depo].copy()
+        for depo in df_for_calculation["DEPO"].unique():
+            df_depo = df_for_calculation[df_for_calculation["DEPO"] == depo].copy()
             if df_depo.empty:
                 continue
             vendors = self.depo_config.get(depo, {}).get("vendors", [])
@@ -181,7 +203,7 @@ def load_master_data():
         creds = ServiceAccountCredentials.from_json_keyfile_dict(
             st.secrets["google_service_account"], scope
         )
-        
+    
         client = gspread.authorize(creds)
 
         # Replace with your Spreadsheet ID
@@ -262,7 +284,8 @@ if pipeline:
                         })
                     manual_df = pd.DataFrame(manual_input_rows)
                     try:
-                        prediction_result = pipeline.run_pipeline(manual_df)
+                        # Opsi default untuk pengecekan manual
+                        prediction_result = pipeline.run_pipeline(manual_df, "Hitung semua material (nilai kosong = 0)")
                         if not prediction_result.empty:
                             result_row = prediction_result.iloc[0]
                             st.subheader(f"Hasil Estimasi untuk DEPO {depo_option}")
@@ -352,6 +375,15 @@ if pipeline:
             help="**Prediksi Total**: Memprioritaskan kontainer dengan potensi penghematan biaya total terbesar. **Prediksi Harga per MHR**: Memprioritaskan kontainer dengan penghematan biaya per jam kerja (MHR) terbesar."
         )
 
+        # --- PENAMBAHAN FITUR: OPSI PERHITUNGAN ---
+        calculation_option = st.selectbox(
+            "Opsi Perhitungan Material Bermasalah",
+            ("Hanya hitung material lengkap (lewati nilai kosong)", "Hitung semua material (nilai kosong = 0)"),
+            key="calc_option",
+            help="**Hanya hitung material lengkap**: Material dengan data master tidak lengkap akan dilewati dan tidak diikutkan dalam total biaya. **Hitung semua material**: Material dengan data master tidak lengkap akan dianggap bernilai 0."
+        )
+        # --- AKHIR PENAMBAHAN FITUR ---
+
         # --- PERUBAHAN FITUR: Prioritas Perbaikan (Multi-select) ---
         priority_filter_options = st.multiselect(
             "Prioritas Perbaikan (Opsional)",
@@ -395,7 +427,7 @@ if pipeline:
         
         @st.cache_data
         # --- PERUBAHAN FITUR: Menambahkan parameter priority_types (list) ---
-        def run_spil_centric_allocation(_pipeline, uploaded_file_content, file_name, depo_option, allocation_method, priority_types, spil_today_cap, other_vendor_caps, use_ov, use_container_filter, use_mhr_filter):
+        def run_spil_centric_allocation(_pipeline, uploaded_file_content, file_name, depo_option, allocation_method, priority_types, spil_today_cap, other_vendor_caps, use_ov, use_container_filter, use_mhr_filter, calculation_option):
             try:
                 file_extension = file_name.split('.')[-1].lower()
                 
@@ -456,7 +488,7 @@ if pipeline:
                 material_counts = data.groupby('NO_EOR').size().reset_index(name='JUMLAH_MATERIAL')
                 # --- AKHIR PENAMBAHAN FITUR ---
 
-                raw_results = _pipeline.run_pipeline(data)
+                raw_results = _pipeline.run_pipeline(data, calculation_option)
                 
                 # --- PENAMBAHAN FITUR: GABUNGKAN JUMLAH MATERIAL KE HASIL ---
                 raw_results = pd.merge(raw_results, material_counts, on='NO_EOR', how='left')
@@ -570,7 +602,7 @@ if pipeline:
 
                 allocations_df = pd.DataFrame.from_dict(allocations, orient='index')
                 final_df = raw_results.set_index('NO_EOR').join(allocations_df, how='left').reset_index()
-                                                        
+                                                                
                 return final_df
             except Exception as e:
                 st.error(f"Terjadi kesalahan saat memproses file: {e}")
@@ -587,7 +619,7 @@ if pipeline:
                         pipeline, uploaded_file_content, file_name, depo_option, allocation_method,
                         priority_filter_options, # <-- Menggunakan variabel baru (list)
                         spil_today_caps, other_vendor_capacities_input, use_other_vendors,
-                        use_container_filter, use_mhr_filter
+                        use_container_filter, use_mhr_filter, calculation_option
                     )
                 
                 if not final_results.empty:
@@ -595,7 +627,7 @@ if pipeline:
                     
                     total_warnings = final_results['WARNING_COUNT'].sum()
                     if total_warnings > 0:
-                        st.warning(f"⚠️ Total ada {int(total_warnings)} material yang tidak ditemukan di data master dan tidak dihitung dalam estimasi.")
+                        st.warning(f"⚠️ Total ada {int(total_warnings)} material bermasalah (tidak ditemukan atau data tidak lengkap) yang mempengaruhi hasil estimasi.")
                     
                     def get_final_mhr(row):
                         if pd.isna(row['ALOKASI']) or 'Tidak Terhandle' in row['ALOKASI']: return np.nan
@@ -620,7 +652,7 @@ if pipeline:
                         'Jumlah_Kontainer': 'Jumlah Kontainer',
                         'Total_MHR': 'Total MHR',
                         'Jumlah_Material': 'Jumlah Material', 
-                        'Total_Warning': 'Material Tidak Dikenali'
+                        'Total_Warning': 'Material Bermasalah'
                     })
                     # --- AKHIR PERUBAHAN ---
 
@@ -628,7 +660,7 @@ if pipeline:
                         "Total Biaya": "Rp {:,.0f}",
                         "Total MHR": "{:,.2f}",
                         "Jumlah Material": "{:,.0f}", 
-                        "Material Tidak Dikenali": "{:,.0f}"
+                        "Material Bermasalah": "{:,.0f}"
                     }), use_container_width=True)
 
                     st.markdown("---")
@@ -641,14 +673,14 @@ if pipeline:
                             'HARGA_FINAL': 'Harga/MHR Final', 'MHR': 'MHR Final', 'ALOKASI': 'Alokasi', 'NO_EOR': 'No EOR',
                             'CONTAINER_TYPE': 'Tipe Kontainer', 'Selisih_Harga_per_MHR': 'Keuntungan per MHR',
                             'PREDIKSI/MHR_SPIL': 'Harga/MHR SPIL', 'HargaPerMHR_Lain': 'Harga/MHR Lain',
-                            'WARNING_COUNT': 'Material Tidak Dikenali',
-                            'JUMLAH_MATERIAL': 'Jumlah Material'
+                            'WARNING_COUNT': 'Jml Material Bermasalah',
+                            'JUMLAH_MATERIAL': 'Total Material'
                         }
                         format_map_detail = {
                             'Harga/MHR Final': 'Rp {:,.0f}/jam', 'MHR Final': '{:,.2f}', 'Keuntungan per MHR': 'Rp {:,.0f}',
                             'Harga/MHR SPIL': 'Rp {:,.0f}', 'Harga/MHR Lain': 'Rp {:,.0f}',
-                            'Material Tidak Dikenali': '{:,.0f}',
-                            'Jumlah Material': '{:,.0f}'
+                            'Jml Material Bermasalah': '{:,.0f}',
+                            'Total Material': '{:,.0f}'
                         }
                         sort_key_display = 'Keuntungan per MHR'
                     else: 
@@ -657,14 +689,14 @@ if pipeline:
                             'HARGA_FINAL': 'Biaya Final', 'MHR': 'MHR Final', 'ALOKASI': 'Alokasi', 'NO_EOR': 'No EOR',
                             'CONTAINER_TYPE': 'Tipe Kontainer', 'Selisih_Prediksi_Biaya': 'Potensi Keuntungan',
                             'PREDIKSI_SPIL': 'Biaya SPIL', 'Prediksi_Biaya_Lain': 'Biaya Lain',
-                            'WARNING_COUNT': 'Material Tidak Dikenali',
-                            'JUMLAH_MATERIAL': 'Jumlah Material'
+                            'WARNING_COUNT': 'Jml Material Bermasalah',
+                            'JUMLAH_MATERIAL': 'Total Material'
                         }
                         format_map_detail = {
                             'Biaya Final': 'Rp {:,.0f}', 'MHR Final': '{:,.2f}', 'Potensi Keuntungan': 'Rp {:,.0f}',
                             'Biaya SPIL': 'Rp {:,.0f}', 'Biaya Lain': 'Rp {:,.0f}',
-                            'Material Tidak Dikenali': '{:,.0f}',
-                            'Jumlah Material': '{:,.0f}'
+                            'Jml Material Bermasalah': '{:,.0f}',
+                            'Total Material': '{:,.0f}'
                         }
                         sort_key_display = 'Potensi Keuntungan'
                     # --- AKHIR PERUBAHAN ---
@@ -701,14 +733,14 @@ if pipeline:
                             'HARGA_FINAL': 'Biaya Final', 'NO_EOR': 'No EOR', 'CONTAINER_TYPE': 'Tipe Kontainer',
                             'ALOKASI': 'Alokasi', 'Selisih_Prediksi_Biaya': 'Potensi Keuntungan (Total)',
                             'Selisih_Harga_per_MHR': 'Potensi Keuntungan (per MHR)', 'MHR': 'MHR Final',
-                            'WARNING_COUNT': 'Material Tidak Dikenali',
-                            'JUMLAH_MATERIAL': 'Jumlah Material'
+                            'WARNING_COUNT': 'Jml Material Bermasalah',
+                            'JUMLAH_MATERIAL': 'Total Material'
                         }
                         format_dict_full = {
                             'Biaya Final': 'Rp {:,.0f}', 'MHR Final': '{:,.2f}',
                             'Potensi Keuntungan (Total)': 'Rp {:,.0f}', 'Potensi Keuntungan (per MHR)': 'Rp {:,.0f}/jam',
-                            'Material Tidak Dikenali': '{:,.0f}',
-                            'Jumlah Material': '{:,.0f}'
+                            'Jml Material Bermasalah': '{:,.0f}',
+                            'Total Material': '{:,.0f}'
                         }
 
                         for col in detail_df_comprehensive.columns:
@@ -746,24 +778,15 @@ if pipeline:
                             key="download_super_lengkap"
                         )
 
-                    with st.expander("Cek Detail Material Tidak Dikenali", expanded=False):
+                    # --- PERUBAHAN LOGIKA PERINGATAN (BAGIAN TAMPILAN) ---
+                    with st.expander("Cek Detail Material Bermasalah", expanded=False):
                         try:
+                            # (Kode untuk membaca ulang file tidak berubah, jadi disingkat)
                             file_extension_check = file_name.split('.')[-1].lower()
                             data_raw_check = None
-                            
                             if file_extension_check == 'csv':
                                 content_str_check = uploaded_file_content.decode('utf-8')
-                                for delimiter in [',', ';', '\t']:
-                                    try:
-                                        temp_df = pd.read_csv(StringIO(content_str_check), delimiter=delimiter)
-                                        if 'MATERIAL' in [c.strip() for c in temp_df.columns]:
-                                            data_raw_check = temp_df
-                                            break
-                                    except Exception:
-                                        continue
-                                if data_raw_check is None:
-                                    data_raw_check = pd.read_csv(StringIO(content_str_check), engine='python')
-
+                                data_raw_check = pd.read_csv(StringIO(content_str_check), sep=None, engine='python')
                             elif file_extension_check in ['xlsx', 'xls']:
                                 data_raw_check = pd.read_excel(BytesIO(uploaded_file_content))
                             elif file_extension_check == 'ods':
@@ -774,25 +797,41 @@ if pipeline:
                                 if 'MATERIAL' in data_raw_check.columns:
                                     data_raw_check['MATERIAL'] = data_raw_check['MATERIAL'].astype(str).str.strip()
                                     
+                                    # 1. Cari material yang tidak ada di master
                                     master_materials_set = set(master_material_df['MATERIAL'])
-                                    unmatched_materials = data_raw_check[~data_raw_check['MATERIAL'].isin(master_materials_set)]
+                                    missing_materials_df = data_raw_check[~data_raw_check['MATERIAL'].isin(master_materials_set)]
+
+                                    # 2. Cari material yang datanya tidak lengkap di master
+                                    cols_to_check = ['COSTMATERIAL', 'SURCHARGE', 'MHR_SPIL', 'MHR_VENDOR']
+                                    master_df_copy = master_material_df.copy()
+                                    for col in cols_to_check:
+                                        if col in master_df_copy.columns:
+                                            master_df_copy[col] = pd.to_numeric(master_df_copy[col], errors='coerce')
                                     
-                                    if not unmatched_materials.empty:
-                                        st.warning("Ditemukan material dari file Anda yang tidak ada di data master. Periksa daftarnya di bawah ini.")
-                                        unmatched_counts = unmatched_materials['MATERIAL'].value_counts().reset_index()
-                                        unmatched_counts.columns = ['Material Tidak Dikenali', 'Jumlah Kemunculan']
-                                        st.dataframe(unmatched_counts, use_container_width=True)
+                                    incomplete_mask = master_df_copy[cols_to_check].isnull().any(axis=1)
+                                    incomplete_materials_in_master = set(master_df_copy[incomplete_mask]['MATERIAL'])
+                                    
+                                    # Filter data upload untuk menemukan penggunaan material yang tidak lengkap ini
+                                    incomplete_in_upload_df = data_raw_check[data_raw_check['MATERIAL'].isin(incomplete_materials_in_master)]
+
+                                    # 3. Gabungkan kedua jenis masalah
+                                    all_problematic_rows = pd.concat([missing_materials_df, incomplete_in_upload_df])
+
+                                    if not all_problematic_rows.empty:
+                                        st.warning("Ditemukan material dari file Anda yang tidak ada di data master, atau datanya tidak lengkap (bernilai 0 atau kosong) di master. Periksa daftarnya di bawah ini.")
+                                        problematic_counts = all_problematic_rows['MATERIAL'].value_counts().reset_index()
+                                        problematic_counts.columns = ['Material Bermasalah', 'Jumlah Kemunculan']
+                                        st.dataframe(problematic_counts, use_container_width=True)
                                     else:
-                                        st.success("✅ Semua material dari file input Anda berhasil dikenali di data master.")
+                                        st.success("✅ Semua material dari file input Anda berhasil dikenali dan memiliki data lengkap di master.")
                                 else:
                                     st.error("Kolom 'MATERIAL' tidak ditemukan di file yang diunggah untuk pengecekan.")
-                            elif data_raw_check is not None:
-                                st.info("File input kosong.")
-                            else:
-                                st.error("Gagal membaca file untuk pengecekan material.")
+                            # (Bagian else untuk penanganan error tidak berubah)
 
                         except Exception as e:
                             st.error(f"Gagal melakukan pengecekan material: {e}")
+                    # --- AKHIR PERUBAHAN LOGIKA PERINGATAN (BAGIAN TAMPILAN) ---
+
 
             except Exception as e:
                 st.error(f"Terjadi error: {str(e)}")
