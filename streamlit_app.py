@@ -83,7 +83,7 @@ class DeterministicCostCalculator:
         # Kondisi 1: Material tidak ada di master (ditandai dengan NaN setelah left merge)
         missing_material_cond = df_merged['MHR_VENDOR'].isnull()
 
-        # Kondisi 2: Material ada, tetapi datanya tidak lengkap (bernilai 0 atau NaN)
+        # Kondisi 2: Material ada, tetapi datanya tidak lengkap (NaN)
         incomplete_data_cond = ~missing_material_cond & (
             df_merged[cols_to_check].isnull().any(axis=1)
         )
@@ -818,7 +818,7 @@ if pipeline:
                                     all_problematic_rows = pd.concat([missing_materials_df, incomplete_in_upload_df])
 
                                     if not all_problematic_rows.empty:
-                                        st.warning("Ditemukan material dari file Anda yang tidak ada di data master, atau datanya tidak lengkap (bernilai 0 atau kosong) di master. Periksa daftarnya di bawah ini.")
+                                        st.warning("Ditemukan material dari file Anda yang tidak ada di data master, atau datanya tidak lengkap (kosong/NA) di master. Periksa daftarnya di bawah ini.")
                                         problematic_counts = all_problematic_rows['MATERIAL'].value_counts().reset_index()
                                         problematic_counts.columns = ['Material Bermasalah', 'Jumlah Kemunculan']
                                         st.dataframe(problematic_counts, use_container_width=True)
